@@ -1,0 +1,7 @@
+# Cloudflare Pages headers: https://developers.cloudflare.com/pages/configuration/headers/
+
+/*
+  Cache-Control: no-cache
+
+/pkg/*.wasm
+  Content-Type: application/wasm

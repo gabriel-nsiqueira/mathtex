@@ -1,0 +1,24 @@
+\text{hello}
+\mathrm{abc}
+x+\text{if } y
+\operatorname{lcm}
+\mathbf{v}
+a\text{ and }b
+\text{for all}
+\text{aaa}
+x\text{x}x
+\mathrm{x}+x
+\text{a}+\text{a}
+\operatorname{lcm}(a,b)
+a\text{ if }b\text{ then }c
+\mathbf{abc}+\mathbf{abc}
+\text{if }x\le y\text{ then }z
+\mathrm{d}x+\mathrm{d}y
+2\operatorname{mod}3
+\text{x}\text{x}\text{x}
+\mathbf{v}=\mathbf{v}+\mathbf{v}
+\text{}a\text{}
+\operatorname{sin}\theta+\operatorname{cos}\theta
+\text{a b c}
+x_{\text{max}}+x_{\text{min}}
+\mathrm{e}^{i\pi}+1

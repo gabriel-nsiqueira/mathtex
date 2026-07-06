@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mathtex · in-browser TeX math → SVG</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+      }
+      h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+      p.lede { margin-top: 0; color: #666; }
+      .editor { position: relative; }
+      .editor textarea, .editor #backdrop {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.95rem; line-height: 1.5; letter-spacing: 0;
+        padding: 0.6rem; border: 1px solid transparent; border-radius: 6px;
+        width: 100%; box-sizing: border-box; margin: 0;
+        white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; tab-size: 2;
+      }
+      .editor textarea {
+        position: relative; z-index: 1; min-height: 4.5rem; resize: vertical;
+        border-color: #ccc; background: transparent; color: inherit; caret-color: currentColor;
+      }
+      .editor #backdrop {
+        position: absolute; inset: 0; z-index: 0; overflow: hidden;
+        color: transparent; pointer-events: none; user-select: none;
+      }
+      .editor #backdrop mark {
+        background: rgba(255, 184, 0, 0.5); color: transparent; border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(214, 137, 16, 0.7);
+      }
+      #out {
+        margin-top: 1rem; padding: 1.25rem; border: 1px solid #ddd; border-radius: 8px;
+        overflow-x: auto; background: canvas;
+      }
+      #out svg { max-width: 100%; height: auto; }
+      #out svg path { fill: currentColor; }
+      #out svg rect { fill: currentColor; }
+      #out svg [data-source-start] { cursor: pointer; }
+      #out svg .src-hover, #out svg .src-hover path { fill: #d6690f; }
+      #out svg rect.src-hover { fill: #d6690f; }
+      .hint { font-size: 0.85rem; color: #888; margin: 0.4rem 0 0.2rem; }
+      #status { font-size: 0.85rem; color: #888; margin-top: 0.75rem; }
+      #err { color: #c0392b; font-family: ui-monospace, monospace; font-size: 0.85rem; white-space: pre-wrap; }
+      .examples button {
+        font: inherit; font-size: 0.8rem; margin: 0.2rem 0.3rem 0 0; padding: 0.25rem 0.5rem;
+        border: 1px solid #ccc; border-radius: 5px; background: transparent; cursor: pointer;
+      }
+      code { background: rgba(127,127,127,0.15); padding: 0.05rem 0.3rem; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>mathtex: TeX math rendered to SVG, entirely in your browser</h1>
+    <p class="lede">
+      A pre-expanded LaTeX&nbsp;+&nbsp;amsmath&nbsp;+&nbsp;unicode-math format and the Latin&nbsp;Modern&nbsp;Math
+      font are packaged and loaded into a WebAssembly build of a portable TeX engine. No server, no TeX install,
+      type math below and it is typeset locally.
+    </p>
+    <p class="lede" style="margin-top:0.4rem;">
+      → Try the <a href="./editor.html" style="color:#5b8def;">structural WYSIWYG editor</a> built on the same engine.
+    </p>
+
+    <label for="latex"><strong>Math (inline body, rendered in <code>\displaystyle</code>):</strong></label>
+    <div class="editor">
+      <div id="backdrop" aria-hidden="true"></div>
+      <textarea id="latex" spellcheck="false">\left(\sum_{k=1}^n a_k b_k\right)^2\leq\left(\sum_{k=1}^n a_k^2\right)\left(\sum_{k=1}^n b_k^2\right)</textarea>
+    </div>
+
+    <div class="examples">
+      <button data-tex="e^{i\pi}+1=0">Euler</button>
+      <button data-tex="\int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}">Gaussian</button>
+      <button data-tex="\frac{-b \pm \sqrt{b^2-4ac}}{2a}">Quadratic</button>
+      <button data-tex="\sum_{n=1}^{\infty}\frac{1}{n^2}=\frac{\pi^2}{6}">Basel</button>
+    </div>
+
+    <p class="hint">Hover a glyph, fraction bar, radical or delimiter in the rendered math to highlight the exact TeX it came from.</p>
+    <div id="out"></div>
+    <div id="err"></div>
+    <div id="status">initializing…</div>
+
+    <script type="module" src="./app.js?v=6"></script>
+    <script type="module">
+      const ta = document.getElementById('latex');
+      for (const b of document.querySelectorAll('.examples button')) {
+        b.addEventListener('click', () => {
+          ta.value = b.dataset.tex;
+          ta.dispatchEvent(new Event('input'));
+        });
+      }
+    </script>
+  </body>
+</html>

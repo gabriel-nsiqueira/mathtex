@@ -1,0 +1,8022 @@
+//! Runtime prelude for auto-patched Web2C/C2Rust engine source.
+//! Generated code must be lowered from raw globals into `PortableTexState`
+//! before it is linked into `mathtex-engine`.
+
+#![allow(dead_code, non_camel_case_types, non_snake_case, non_upper_case_globals)]
+
+pub(crate) type integer = i32;
+pub(crate) type size_t = usize;
+pub(crate) type int32_t = i32;
+pub(crate) type uint32_t = u32;
+pub(crate) type real = f64;
+pub(crate) type glueratio = f64;
+pub(crate) type boolean = i32;
+pub(crate) type schar = i8;
+pub(crate) type ASCIIcode = integer;
+pub(crate) type eightbits = integer;
+pub(crate) type poolpointer = integer;
+pub(crate) type strnumber = integer;
+pub(crate) type savepointer = integer;
+pub(crate) type packedASCIIcode = u16;
+pub(crate) type packedUTF16code = u16;
+pub(crate) type scaled = integer;
+pub(crate) type nonnegativeinteger = integer;
+pub(crate) type smallnumber = integer;
+pub(crate) type quarterword = integer;
+pub(crate) type halfword = integer;
+pub(crate) type glueord = integer;
+pub(crate) type groupcode = integer;
+pub(crate) type internalfontnumber = integer;
+pub(crate) type fontindex = integer;
+pub(crate) type ninebits = integer;
+pub(crate) type triepointer = integer;
+pub(crate) type trieopcode = integer;
+pub(crate) type hyphpointer = integer;
+pub(crate) type UTF16code = u16;
+pub(crate) type UnicodeScalar = integer;
+pub(crate) type uint16_t = u16;
+pub(crate) type UTF8code = integer;
+pub(crate) type voidpointer = *mut ();
+pub(crate) type address = voidpointer;
+pub(crate) type string = *mut i8;
+pub(crate) type const_string = *const i8;
+pub(crate) type Fixed = int32_t;
+pub(crate) struct PortableFileHandle {
+    name: String,
+    kind: ResourceKind,
+    package: Option<String>,
+    format: integer,
+    bytes: Vec<u8>,
+    cursor: usize,
+    eof_after_failed_read: bool,
+    /// Input encoding used to decode this file's bytes into Unicode scalars.
+    /// `Bytes` (XeTeX `RAW`) reads each byte verbatim; `Utf8`/`Utf16Be`/`Utf16Le`
+    /// reproduce XeTeX's `get_uni_c` decoders. Binary inputs (tfm/font/fmt) are
+    /// always `Bytes`.
+    encoding: InputEncoding,
+    /// One-unit lookahead for the UTF-16 surrogate decoder (XeTeX `savedChar`).
+    saved_char: Option<u32>,
+}
+
+/// Input decoding mode for a [`PortableFileHandle`], mirroring XeTeX's encoding
+/// modes (`xetex.h`): `Bytes` corresponds to `RAW`. `AUTO`/`ICUMAPPING` are not
+/// stored here — `AUTO` is resolved to a concrete mode at open time (BOM sniff),
+/// and ICU mappings degrade to `Bytes`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputEncoding {
+    /// Raw bytes, one Unicode scalar per byte (XeTeX `RAW`).
+    #[default]
+    Bytes,
+    /// UTF-8 (XeTeX `UTF8`).
+    Utf8,
+    /// UTF-16 big-endian (XeTeX `UTF16BE`).
+    Utf16Be,
+    /// UTF-16 little-endian (XeTeX `UTF16LE`).
+    Utf16Le,
+}
+pub(crate) type bytefile = NativeFileHandle;
+pub(crate) type unicodefile = NativeFileHandle;
+pub(crate) type ResourceSearchHandle = *mut ResourceSearchState;
+pub type PortableFontHandle = usize;
+pub(crate) type FontHandle = PortableFontHandle;
+pub(crate) type CFDictionaryRef = voidpointer;
+pub(crate) type NativeFileHandle = *mut PortableFileHandle;
+pub(crate) type alphafile = NativeFileHandle;
+pub(crate) type UFILE = PortableFileHandle;
+
+pub(crate) const true_0: boolean = 1;
+pub(crate) const false_0: boolean = 0;
+pub(crate) const firstmathfontdimen: integer = 10;
+pub(crate) const native_node_size: integer = 6;
+
+#[derive(Debug)]
+pub(crate) struct EngineAbort {
+    status: integer,
+}
+
+/// A surfaced, recoverable engine error: a TeX `! ...` diagnostic (undefined
+/// control sequence, bad argument, runaway, or a sandbox-rule violation). Unlike
+/// [`EngineAbort`] -- the fatal `jump_out`/`fatal_error`/`overflow` channel --
+/// this carries the captured message so the host can report *what* went wrong
+/// instead of only that the run aborted.
+#[derive(Debug)]
+pub(crate) struct EngineError {
+    pub(crate) message: String,
+}
+
+/// The engine's non-`Ok` outcomes. `Abort` is the fatal jump_out/overflow
+/// channel; `Error` is a surfaced TeX error carrying its message. This is the
+/// `Err` payload of a `Result` rather than a bespoke enum replacing `Result`,
+/// so the `?` operator keeps working across the ~120 generated bodies -- stable
+/// Rust `?` is `Result`/`Option`-only.
+#[derive(Debug)]
+pub(crate) enum EngineBreak {
+    Abort(EngineAbort),
+    Error(EngineError),
+}
+
+impl From<EngineAbort> for EngineBreak {
+    fn from(abort: EngineAbort) -> Self {
+        EngineBreak::Abort(abort)
+    }
+}
+
+/// Collapse a uniformly character-doubled line back to its original. TeX's
+/// `term_and_log` selector writes each byte to both the terminal and the log,
+/// and in this headless build both feed the single transcript buffer, so a
+/// diagnostic such as `! Undefined control sequence.` arrives with every
+/// character repeated (`!! Undefined ...`). Returns `Some` only when the line is
+/// exactly 2x doubled (even length, every adjacent pair equal); otherwise `None`
+/// so genuinely non-doubled lines pass through untouched.
+fn collapse_doubled_line(line: &str) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() < 2 || chars.len() % 2 != 0 {
+        return None;
+    }
+    if chars.chunks_exact(2).all(|pair| pair[0] == pair[1]) {
+        Some(chars.iter().step_by(2).collect())
+    } else {
+        None
+    }
+}
+
+/// Main-control iteration budget for a sandboxed fragment render. Far more than
+/// any real expression needs, but bounds infinite loops so a malicious or
+/// mistaken input (`\def\x{\x}\x`) cannot hang the host.
+pub(crate) const SANDBOX_OP_BUDGET: u64 = 2_000_000;
+
+/// Non-unwinding abort/error channel. Functions that can reach the engine's
+/// fatal `jump_out`/`fatal_error`/`overflow` paths -- or that surface a TeX
+/// error -- return this instead of diverging via `panic_any`, so the engine
+/// runs under `panic=abort` (wasm). The `?` operator threads the `Err(EngineBreak)`
+/// straight back to the driver boundary in [`PortableTexEngine::catch_engine_abort`].
+/// The alias keeps signatures off the bare `Result` identifier, which is shadowed
+/// by ~120 local `Result` bindings in the generated bodies; `core::result::Result`
+/// is `no_std`-safe.
+pub(crate) type EngineFlow<T> = core::result::Result<T, EngineBreak>;
+pub(crate) const nullptr: voidpointer = core::ptr::null_mut::<()>();
+pub(crate) const nil: voidpointer = core::ptr::null_mut::<()>();
+pub(crate) const maxint: integer = i32::MAX;
+pub(crate) const mintrieop: integer = 0;
+pub(crate) const trieopsize: i64 = 35111;
+pub(crate) const negtrieopsize: i64 = -35111;
+pub(crate) const maxtrieop: i64 = 65535;
+pub(crate) const hashoffset: integer = 514;
+pub(crate) const xetex_hash_top: halfword = 1_205_763;
+pub(crate) const xetex_eqtb_top: halfword = 9_006_997;
+pub(crate) const DIR_SEP: integer = b'/' as integer;
+pub(crate) const resource_format_tex_input: integer = 26;
+pub(crate) const resource_format_tfm: integer = 3;
+pub(crate) const resource_format_format_image: integer = 10;
+pub(crate) const resource_format_config: integer = 8;
+pub(crate) const resource_format_font_map: integer = 11;
+pub(crate) const resource_format_encoding: integer = 44;
+pub(crate) const resource_format_font: integer = 47;
+pub(crate) const FOPEN_RBIN_MODE: [i8; 3] = [b'r' as i8, b'b' as i8, 0];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableSourceSpan {
+    pub name: String,
+    pub start: u32,
+    pub end: u32,
+    /// Provenance role, mirroring the IR `SourceRole` discriminant: 0=Primary,
+    /// 1=MacroExpansion. Set deterministically by the stamping site, never
+    /// guessed.
+    pub role: u8,
+}
+
+/// Interned source-span id used by the (feature-gated) source-tracking subsystem.
+/// `0` is the canonical NONE; real spans start at `1`. The id indexes
+/// `PortableTexState::src_spans`.
+pub(crate) type SrcId = u32;
+
+/// One recorded source span in a *source file's own* character coordinates
+/// (NOT wrapper-relative). `name` is `curinput.namefield` (the source-file
+/// string number); `start`/`end` are character offsets in that file's input.
+/// `role` matches [`PortableSourceSpan::role`]. Hashed/equated by all fields so
+/// the intern table assigns stable first-touch ids.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct RawSpan {
+    pub name: strnumber,
+    pub start: u32,
+    pub end: u32,
+    pub role: u8,
+}
+
+/// `default_fn` for the `node_src` paged shadow: an unstamped node is NONE.
+fn node_src_default(_i: usize) -> u32 {
+    0
+}
+
+/// Significant-byte range for `node_src` words (the whole `u32` is live).
+fn node_src_sig(_i: usize) -> (usize, usize) {
+    (0, 4)
+}
+
+/// One frame on the enclosing-construct stack (source-tracking inc2). A frame is
+/// an interned construct extent (a macro invocation or a delimited primitive
+/// argument group) plus a link to its parent frame, forming a per-node snapshot
+/// of the construct nesting that was live when the node was allocated. Group
+/// frames are PENDING between their `{` open and `}` close (the closing-delimiter
+/// offset is unknown until the close), finalized in place at the close. Cells are
+/// addressed 1-based via [`PortableTexState::cur_stack_head`] / `node_stack`
+/// (`0` = no enclosure). Transient per-render parse state, cleared with the rest
+/// of the source-tracking tables.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SrcStackCell {
+    /// Finalized interned construct-extent span id (`0` while pending / none).
+    pub span: SrcId,
+    /// Parent frame index (1-based; `0` = root / no parent).
+    pub parent: u32,
+    /// Pending group: char offset of the enclosing command's start.
+    pub start: u32,
+    /// Pending group: source-file string number the offsets live in.
+    pub name: strnumber,
+    /// True while a group frame is open (its end offset is not yet known).
+    pub pending: bool,
+}
+
+/// `default_fn` for the `node_stack` paged shadow: an unstamped node has no
+/// enclosing frame (`0`).
+fn node_stack_default(_i: usize) -> u32 {
+    0
+}
+
+/// Significant-byte range for `node_stack` words (the whole `u32` is live).
+fn node_stack_sig(_i: usize) -> (usize, usize) {
+    (0, 4)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableNodeSourceSpan {
+    pub node: i32,
+    pub size: i32,
+    pub source: PortableSourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceKind {
+    TexInput,
+    Package,
+    Class,
+    FontDefinition,
+    PackageSupport,
+    Font,
+    Encoding,
+    Map,
+    Config,
+    FormatImage,
+    Asset,
+    Other(integer),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceRequest<'a> {
+    pub name: &'a str,
+    pub kind: ResourceKind,
+    pub package: Option<&'a str>,
+    pub format: integer,
+    pub mode: &'a str,
+    pub source: Option<PortableSourceSpan>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableResourceRequestRecord {
+    pub name: String,
+    pub kind: ResourceKind,
+    pub package: Option<String>,
+    pub format: integer,
+    pub mode: String,
+    pub source: Option<PortableSourceSpan>,
+    pub byte_len: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortableFontMetrics {
+    pub ascent: i32,
+    pub descent: i32,
+    pub xheight: i32,
+    pub capheight: i32,
+    pub slant: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortableNativeGlyph {
+    pub glyph_id: u16,
+    pub x: i32,
+    pub y: i32,
+    pub advance: i32,
+    pub cluster_start: u32,
+    pub cluster_end: u32,
+    /// SOURCE byte span (in the producing node's `primary_source.source`
+    /// coordinates) of the input char(s) that shaped this glyph, resolved from
+    /// the per-code-unit tracked spans. `0/0` means unmapped (tracking off, no
+    /// source, cross-source, or stale). Set by `src_resolve_native_glyphs`; the
+    /// rendering fields (`glyph_id`/`x`/`y`/`advance`) are never touched.
+    pub src_start: u32,
+    pub src_end: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PortableNativeTextMetrics {
+    pub width: i32,
+    pub height: i32,
+    pub depth: i32,
+    pub glyphs: Vec<PortableNativeGlyph>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortableNativeGlyphMetrics {
+    pub width: i32,
+    pub height: i32,
+    pub depth: i32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PortableNativeGlyphInfo {
+    glyphs: Vec<PortableNativeGlyph>,
+}
+
+/// A larger OpenType MATH glyph variant: the variant glyph id and its advance in
+/// scaled points (`-1` advance means "no such variant").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableMathVariant {
+    pub glyph: i32,
+    pub advance: i32,
+}
+
+/// One part of an OpenType MATH glyph assembly, all measurements in scaled
+/// points (mirrors `hb_ot_math_glyph_part_t` / ttf-parser `GlyphPart`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortableMathAssemblyPart {
+    pub glyph: i32,
+    pub start_connector: i32,
+    pub end_connector: i32,
+    pub full_advance: i32,
+    pub extender: bool,
+}
+
+/// A corner of an OpenType `MathKernInfo` record (mirrors `hb_ot_math_kern_t`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortableMathKernCorner {
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+}
+
+/// Heap-owned OpenType MATH glyph assembly handed to the engine as an opaque
+/// pointer by `get_ot_assembly_ptr` and reclaimed by `free_ot_assembly`.
+///
+/// This replaces XeTeX's C `GlyphAssembly` (`{count; hb_ot_math_glyph_part_t*}`)
+/// with a safe Rust struct: it is allocated with `Box::into_raw` and freed with
+/// `Box::from_raw`, never libc. `build_opentype_assembly` (the sole consumer in
+/// this engine) reads it directly in Rust.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GlyphAssembly {
+    pub parts: Vec<PortableMathAssemblyPart>,
+}
+
+pub trait FontPlatform {
+    fn resolve_font_handle(&mut self, _name: &[i32], _size: i32) -> Option<PortableFontHandle> {
+        None
+    }
+
+    fn release_font_handle(&mut self, _font: PortableFontHandle, _type_flag: i32) {}
+
+    /// Snapshot the platform's native-font table as `(handle, spec, size)`
+    /// tuples. A serialized format image keeps integer font handles in
+    /// `fontlayoutengine`, but those handles only mean something to the platform
+    /// that minted them; capturing the table lets a cold load rebind them.
+    fn font_table(&self) -> Vec<(PortableFontHandle, String, i32)> {
+        Vec::new()
+    }
+
+    /// Rebuild the native-font table from a [`Self::font_table`] snapshot,
+    /// (re)loading each font *at its original handle* so the `fontlayoutengine`
+    /// handles preserved in a reloaded format image resolve again. Returns
+    /// `false` if any font failed to load.
+    fn restore_font_table(&mut self, _table: &[(PortableFontHandle, String, i32)]) -> bool {
+        true
+    }
+
+    fn font_metrics(&mut self, _font: PortableFontHandle) -> PortableFontMetrics {
+        PortableFontMetrics::default()
+    }
+
+    fn opentype_font_metrics(&mut self, font: PortableFontHandle) -> PortableFontMetrics {
+        self.font_metrics(font)
+    }
+
+    fn is_opentype_math_font(&mut self, _font: PortableFontHandle) -> bool {
+        false
+    }
+
+    /// Whether `font` is shaped through the OpenType (HarfBuzz/rustybuzz) shaper.
+    /// Mirrors XeTeX's `usingOpenType`, which is true for the `"ot"` shaper (the
+    /// default). This engine always shapes native fonts with rustybuzz, so any
+    /// loaded native font handle returns `true`.
+    fn using_opentype(&mut self, _font: PortableFontHandle) -> bool {
+        false
+    }
+
+    fn math_symbol_parameter(&mut self, _font: PortableFontHandle, _parameter: i32) -> i32 {
+        0
+    }
+
+    fn math_extension_parameter(&mut self, _font: PortableFontHandle, _parameter: i32) -> i32 {
+        0
+    }
+
+    fn opentype_math_constant(&mut self, _font: PortableFontHandle, _constant: i32) -> i32 {
+        0
+    }
+
+    fn opentype_math_accent_position(&mut self, _font: PortableFontHandle, _glyph: i32) -> i32 {
+        0
+    }
+
+    /// OpenType MATH italic correction for a glyph, in scaled points.
+    fn math_glyph_italic_correction(&mut self, _font: PortableFontHandle, _glyph: i32) -> i32 {
+        0
+    }
+
+    /// The `index`-th larger MATH glyph variant of `glyph` (horizontal or
+    /// vertical), or `None` when there is no such variant. The advance is in
+    /// scaled points.
+    fn math_glyph_variant(
+        &mut self,
+        _font: PortableFontHandle,
+        _glyph: i32,
+        _index: u16,
+        _horizontal: bool,
+    ) -> Option<PortableMathVariant> {
+        None
+    }
+
+    /// The MATH glyph-assembly parts for `glyph` (horizontal or vertical), each
+    /// metric in scaled points. Empty when the glyph has no assembly.
+    fn math_glyph_assembly(
+        &mut self,
+        _font: PortableFontHandle,
+        _glyph: i32,
+        _horizontal: bool,
+    ) -> Vec<PortableMathAssemblyPart> {
+        Vec::new()
+    }
+
+    /// The MATH minimum connector overlap for assembly parts, in scaled points.
+    fn math_min_connector_overlap(&mut self, _font: PortableFontHandle) -> i32 {
+        0
+    }
+
+    /// One MATH `MathKernInfo` corner evaluated at `correction_height` (font
+    /// design units), returned in raw font design units (NOT scaled).
+    fn math_kern_at(
+        &mut self,
+        _font: PortableFontHandle,
+        _glyph: i32,
+        _corner: PortableMathKernCorner,
+        _correction_height: i32,
+    ) -> i32 {
+        0
+    }
+
+    /// Convert a measurement in points to font design units for `font`
+    /// (`pointsToUnits`).
+    fn math_points_to_units(&mut self, _font: PortableFontHandle, _points: f32) -> f32 {
+        0.0
+    }
+
+    /// Convert a measurement in font design units to scaled points for `font`
+    /// (`D2Fix(unitsToPoints(...))`).
+    fn math_units_to_scaled(&mut self, _font: PortableFontHandle, _units: i32) -> i32 {
+        0
+    }
+
+    /// The point size at which `font` was loaded (`getPointSize`).
+    fn math_point_size(&mut self, _font: PortableFontHandle) -> f32 {
+        0.0
+    }
+
+    fn map_char_to_glyph(&mut self, _font: PortableFontHandle, _codepoint: i32) -> i32 {
+        0
+    }
+
+    fn map_glyph_to_index(&mut self, _font: PortableFontHandle, _name: &str) -> i32 {
+        0
+    }
+
+    /// OpenType layout enumeration backing the `\XeTeXOT*` / `\XeTeXcountglyphs`
+    /// `last_item` primitives (XeTeX `ot_font_get`/`_1`/`_2`/`_3`). `what` is the
+    /// XeTeX_ext code (1 = count glyphs, 16 = count scripts, 17 = count
+    /// languages, 18 = count features, 19 = script tag, 20 = language tag,
+    /// 21 = feature tag); unused params are 0.
+    fn ot_font_get(
+        &mut self,
+        _font: PortableFontHandle,
+        _what: i32,
+        _param1: i32,
+        _param2: i32,
+        _param3: i32,
+    ) -> i32 {
+        0
+    }
+
+    /// The `\font` spec string a loaded handle was created from (e.g.
+    /// `[latinmodern-math.otf]:script=math;ssty=1`). Immutable so the read-only
+    /// IR-building path can recover the originating font file for a glyph run.
+    fn font_spec(&self, _font: PortableFontHandle) -> Option<String> {
+        None
+    }
+
+    fn shape_native_text(
+        &mut self,
+        _font: PortableFontHandle,
+        _text: &[u16],
+        _use_glyph_metrics: bool,
+    ) -> PortableNativeTextMetrics {
+        PortableNativeTextMetrics::default()
+    }
+
+    fn measure_native_glyph(
+        &mut self,
+        _font: PortableFontHandle,
+        _glyph: u16,
+        _use_glyph_metrics: bool,
+    ) -> PortableNativeGlyphMetrics {
+        PortableNativeGlyphMetrics::default()
+    }
+}
+
+#[derive(Default)]
+pub struct EmptyFontPlatform;
+
+impl FontPlatform for EmptyFontPlatform {}
+
+pub trait ResourceProvider {
+    fn read(&mut self, request: ResourceRequest<'_>) -> Option<Vec<u8>>;
+}
+
+#[derive(Default)]
+pub struct EmptyResourceProvider;
+
+impl ResourceProvider for EmptyResourceProvider {
+    fn read(&mut self, _request: ResourceRequest<'_>) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PortableClock {
+    pub seconds: integer,
+    pub micros: integer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableLinebreakRequest<'a> {
+    pub font: integer,
+    pub locale: integer,
+    pub text: &'a [uint16_t],
+}
+
+pub trait PortablePlatform {
+    fn clock(&mut self) -> PortableClock {
+        PortableClock::default()
+    }
+
+    fn linebreak_start(&mut self, _request: PortableLinebreakRequest<'_>) {}
+
+    fn linebreak_next(&mut self) -> Option<integer> {
+        None
+    }
+}
+
+#[derive(Default)]
+pub struct EmptyPlatform;
+
+impl PortablePlatform for EmptyPlatform {}
+
+impl PortableFileHandle {
+    fn new(
+        name: String,
+        kind: ResourceKind,
+        package: Option<String>,
+        format: integer,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            name,
+            kind,
+            package,
+            format,
+            bytes,
+            cursor: 0,
+            eof_after_failed_read: false,
+            encoding: InputEncoding::Bytes,
+            saved_char: None,
+        }
+    }
+
+    fn read_byte(&mut self) -> Option<u8> {
+        let Some(byte) = self.bytes.get(self.cursor).copied() else {
+            self.eof_after_failed_read = true;
+            return None;
+        };
+        self.cursor += 1;
+        Some(byte)
+    }
+
+    fn has_remaining(&self) -> bool {
+        self.cursor < self.bytes.len()
+    }
+
+    fn is_eof(&self) -> bool {
+        self.eof_after_failed_read
+    }
+
+    /// Resolve the input encoding for a freshly opened TEXT file, reproducing
+    /// XeTeX's `u_open_in` AUTO byte-order-mark sniff and consuming the BOM by
+    /// advancing the initial cursor. Only meaningful for text inputs under the
+    /// XeTeX profile; binary inputs and non-XeTeX profiles stay `Bytes`.
+    ///
+    /// XeTeX (`u_open_in`, AUTO mode):
+    ///   * `FE FF`         -> UTF16BE, consume 2 (BOM)
+    ///   * `FF FE`         -> UTF16LE, consume 2 (BOM)
+    ///   * `00 xx (xx!=0)` -> UTF16BE, rewind (no consume)
+    ///   * `xx 00 (xx!=0)` -> UTF16LE, rewind (no consume)
+    ///   * `EF BB BF`      -> UTF8,    consume 3 (BOM)
+    ///   * otherwise       -> UTF8,    rewind (no consume)
+    fn resolve_text_encoding_auto(&mut self) {
+        let b1 = self.bytes.first().copied();
+        let b2 = self.bytes.get(1).copied();
+        match (b1, b2) {
+            (Some(0xFE), Some(0xFF)) => {
+                self.encoding = InputEncoding::Utf16Be;
+                self.cursor = 2;
+            }
+            (Some(0xFF), Some(0xFE)) => {
+                self.encoding = InputEncoding::Utf16Le;
+                self.cursor = 2;
+            }
+            (Some(0x00), Some(b2)) if b2 != 0 => {
+                self.encoding = InputEncoding::Utf16Be;
+                // rewind: no BOM consumed.
+            }
+            (Some(b1), Some(0x00)) if b1 != 0 => {
+                self.encoding = InputEncoding::Utf16Le;
+            }
+            (Some(0xEF), Some(0xBB)) if self.bytes.get(2).copied() == Some(0xBF) => {
+                self.encoding = InputEncoding::Utf8;
+                self.cursor = 3;
+            }
+            _ => {
+                self.encoding = InputEncoding::Utf8;
+            }
+        }
+    }
+
+    /// Decode the next Unicode scalar from the input, dispatching on the file's
+    /// encoding. Returns `None` at end of input (XeTeX `EOF`). Faithful port of
+    /// XeTeX's `get_uni_c` (`XeTeX_ext.c`): `GETC` == [`read_byte`], `UNGETC` ==
+    /// `cursor -= 1`, and `savedChar` == [`saved_char`].
+    fn next_input_scalar(&mut self) -> Option<u32> {
+        // savedChar lookahead (only set by the UTF-16 decoders).
+        if let Some(saved) = self.saved_char.take() {
+            return Some(saved);
+        }
+        match self.encoding {
+            InputEncoding::Bytes => self.read_byte().map(u32::from),
+            InputEncoding::Utf8 => self.next_utf8_scalar(),
+            InputEncoding::Utf16Be => self.next_utf16_scalar(true),
+            InputEncoding::Utf16Le => self.next_utf16_scalar(false),
+        }
+    }
+
+    /// UTF-8 branch of `get_uni_c`. Uses the `bytesFromUTF8` extra-byte count with
+    /// fall-through continuation reads; a continuation outside `0x80..=0xBF` is
+    /// bad UTF-8 -> UNGETC the offending byte and return U+FFFD; the assembled
+    /// value is corrected by `offsetsFromUTF8` and range-checked.
+    fn next_utf8_scalar(&mut self) -> Option<u32> {
+        // offsetsFromUTF8[extraBytes].
+        const OFFSETS: [u32; 6] = [
+            0x0000_0000,
+            0x0000_3080,
+            0x000E_2080,
+            0x03C8_2080,
+            0xFA08_2080,
+            0x8208_2080,
+        ];
+        let lead = self.read_byte()?;
+        // bytesFromUTF8[lead]: extra continuation bytes (0..=5).
+        let extra: usize = match lead {
+            0x00..=0xBF => 0,
+            0xC0..=0xDF => 1,
+            0xE0..=0xEF => 2,
+            0xF0..=0xF7 => 3,
+            0xF8..=0xFB => 4,
+            0xFC..=0xFF => 5,
+        };
+        // Assemble in a wider type to mirror C's `int rval` (continuations <<6).
+        let mut rval: i64 = i64::from(lead);
+        // C `switch(extraBytes)` falls through cases 3,2,1; cases 4,5 jump
+        // straight to the bad-utf8 return without reading continuations.
+        if extra >= 4 {
+            // Lead bytes 0xF8..0xFF: no valid 4/5-byte sequence; return U+FFFD
+            // without consuming further (mirrors the `case 5/4:` bad path).
+            return Some(0xFFFD);
+        }
+        for _ in 0..extra {
+            match self.read_byte() {
+                Some(c) if (0x80..0xC0).contains(&c) => {
+                    rval = (rval << 6) + i64::from(c);
+                }
+                Some(c) => {
+                    // bad_utf8: UNGETC the offending byte, return U+FFFD.
+                    self.cursor -= 1;
+                    let _ = c;
+                    return Some(0xFFFD);
+                }
+                None => {
+                    // EOF mid-sequence: bad_utf8 without UNGETC.
+                    return Some(0xFFFD);
+                }
+            }
+        }
+        rval -= i64::from(OFFSETS[extra]);
+        if rval < 0 || rval > 0x10_FFFF {
+            return Some(0xFFFD);
+        }
+        Some(rval as u32)
+    }
+
+    /// UTF-16 branch of `get_uni_c` for big- or little-endian. A high surrogate
+    /// (`D800..=DBFF`) pulls a second unit; a matching low surrogate
+    /// (`DC00..=DFFF`) combines to a supplementary scalar, otherwise U+FFFD and
+    /// the stray unit is stashed in `saved_char`. A lone low surrogate -> U+FFFD.
+    fn next_utf16_scalar(&mut self, big_endian: bool) -> Option<u32> {
+        let unit = self.read_utf16_unit(big_endian)?;
+        if (0xD800..=0xDBFF).contains(&unit) {
+            // High surrogate: read the low surrogate (may hit EOF).
+            match self.read_utf16_unit(big_endian) {
+                Some(lo) if (0xDC00..=0xDFFF).contains(&lo) => {
+                    Some(0x10000 + (unit - 0xD800) * 0x400 + (lo - 0xDC00))
+                }
+                Some(lo) => {
+                    self.saved_char = Some(lo);
+                    Some(0xFFFD)
+                }
+                None => Some(0xFFFD),
+            }
+        } else if (0xDC00..=0xDFFF).contains(&unit) {
+            // Lone low surrogate.
+            Some(0xFFFD)
+        } else {
+            Some(unit)
+        }
+    }
+
+    /// Read one 16-bit UTF-16 code unit (two bytes) in the given endianness.
+    /// Returns `None` only when the first byte is at EOF (mirrors `GETC` ==
+    /// `EOF`); a missing trailing byte is treated as `0` like C's `GETC`/`<<8`.
+    fn read_utf16_unit(&mut self, big_endian: bool) -> Option<u32> {
+        let first = self.read_byte()?;
+        let second = self.read_byte().unwrap_or(0);
+        let unit = if big_endian {
+            (u32::from(first) << 8) + u32::from(second)
+        } else {
+            u32::from(first) + (u32::from(second) << 8)
+        };
+        Some(unit)
+    }
+}
+
+pub(crate) trait StatePtrCompat<T> {
+    fn as_mut_ptr(self) -> *mut T;
+    fn is_empty(self) -> bool;
+}
+
+impl<T> StatePtrCompat<T> for *mut T {
+    fn as_mut_ptr(self) -> *mut T {
+        self
+    }
+
+    fn is_empty(self) -> bool {
+        self.is_null()
+    }
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub(crate) union twohalves {
+    pub v: TwoHalvesPair,
+    pub u: TwoHalvesBytes,
+}
+
+impl Default for twohalves {
+    fn default() -> Self {
+        Self {
+            v: TwoHalvesPair::default(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct TwoHalvesBytes {
+    pub B1: i16,
+    pub B0: i16,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct TwoHalvesPair {
+    pub LH: halfword,
+    pub RH: halfword,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub(crate) struct fourquarters {
+    pub u: FourQuarterBytes,
+}
+
+impl Default for fourquarters {
+    fn default() -> Self {
+        Self {
+            u: FourQuarterBytes::default(),
+        }
+    }
+}
+
+// Real XeTeX packs a `memory_word` into 8 bytes: its `four_quarters` view is
+// four *16-bit* quarterwords. The c2rust translation widened these to 32-bit
+// (`quarterword = i32`), tripling every `memory_word`/`font_memory_word` to 24
+// bytes (and with it `mem`, `eqtb`, `fontinfo`). Storing them as `u16` — XeTeX's
+// real unsigned quarterword width (0..=65535, enough for native glyph ids) —
+// restores the packed layout (memory_word 24 -> 16 bytes). The `quarterword`
+// alias stays `i32` for general arithmetic; only this storage view is narrowed.
+// NOTE: the c2rust functions/*.rs write/read these fields with `as quarterword`
+// (i32); the `FourQuarterCastPass` in tools/web2c-import wraps those sites with
+// `as u16`/`as i32` so they stay type-correct against this narrowed view.
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct FourQuarterBytes {
+    pub B3: u16,
+    pub B2: u16,
+    pub B1: u16,
+    pub B0: u16,
+}
+
+pub(crate) type C2RustUnnamed_2 = FourQuarterBytes;
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub(crate) union memoryword {
+    pub gr: glueratio,
+    pub hh: twohalves,
+    pub u: MemoryInt,
+    pub v: MemoryQuarters,
+    pub ptr: voidpointer,
+}
+
+impl Default for memoryword {
+    fn default() -> Self {
+        Self {
+            u: MemoryInt::default(),
+        }
+    }
+}
+
+// Packed to match real XeTeX (and the already-packed `fmemoryword`): the
+// `four_quarters`/`cint` views sit at offset 0, not behind a `junk` halfword.
+// Dropping `junk` takes `memory_word` from 16 -> 8 bytes (`MemoryQuarters` was
+// the union's largest variant at junk(4)+qqqq(8)=12, rounded to 16). TeX accesses
+// each live word through exactly one view, so the `cint`/`qqqq` <-> `hh.rh`
+// offset-4 aliasing the c2rust output happened to expose is never relied upon.
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct MemoryQuarters {
+    pub QQQQ: fourquarters,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct MemoryInt {
+    pub CINT: integer,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub(crate) union fmemoryword {
+    pub u: FontMemoryInt,
+    pub v: FontMemoryQuarters,
+}
+
+impl Default for fmemoryword {
+    fn default() -> Self {
+        Self {
+            u: FontMemoryInt::default(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct FontMemoryQuarters {
+    pub QQQQ: fourquarters,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct FontMemoryInt {
+    pub CINT: integer,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct liststaterecord {
+    pub modefield: i16,
+    pub headfield: halfword,
+    pub tailfield: halfword,
+    pub eTeXauxfield: halfword,
+    pub pgfield: integer,
+    pub mlfield: integer,
+    pub auxfield: memoryword,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct instaterecord {
+    pub statefield: quarterword,
+    pub indexfield: quarterword,
+    pub startfield: halfword,
+    pub locfield: halfword,
+    pub limitfield: halfword,
+    pub namefield: halfword,
+    /// Source-tracking AMBIENT span for this input level (feature-gated). Rides
+    /// the existing whole-record input-stack push (`zbegintokenlist`) / pop
+    /// (`endtokenlist`/`endfilereading`) save/restore with zero extra code, so a
+    /// macro/file level's inherited span is torn down automatically on pop. `0`
+    /// (NONE) on the default render path.
+    pub spanfield: SrcId,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct transform {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct realpoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct realrect {
+    pub x: f32,
+    pub y: f32,
+    pub wd: f32,
+    pub ht: f32,
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub(crate) struct ResourceSearchState {
+    pub make_tex_discard_errors: boolean,
+}
+
+// ---------------------------------------------------------------------------
+// Paged sparse backing for the per-codepoint `eqtb` / `hash` regions.
+//
+// XeTeX's `eqtb` reserves one slot per Unicode codepoint for each of the
+// cat/lc/uc/sf/math/del code tables — ~7.8M slots spanning absolute indices
+// [`CODEPOINT_LO`..`eqtb_top`]. `initialize` fills them with a per-band default
+// (cat=12, sf=1000, math=identity, lc/uc/band6=0, del=-1); a real
+// LaTeX+unicode-math format overrides only a few thousand. The parallel `hash`
+// array never touches that middle region at all. Stored densely this is ~125 MB
+// (eqtb) + ~62 MB (hash) of mostly-identical defaults.
+//
+// `PagedArray` keeps the frequently-touched low region [base..CODEPOINT_LO)
+// dense and pages the high region lazily: a page faults in (filled from
+// `default_fn`) only on first access, and `compact()` — run when a format image
+// is sealed — frees any page still byte-equal to its defaults. Correctness never
+// depends on `default_fn` matching TeX's real defaults: a freed page is
+// regenerated identically on next access; only how much memory is reclaimed does.
+const CODEPOINT_LO: usize = 1_207_592; // cat_code_base: first per-codepoint band
+const PAGE_BITS: usize = 12;
+const PAGE_LEN: usize = 1 << PAGE_BITS;
+/// Live byte range of an `eqtb` word at absolute index `i`. The cat/lc/uc/sf/math
+/// code bands read the whole `two_halves` (bytes 0..8: value `RH` + eq_type/level
+/// `B0`/`B1`). The del/int region [7892264..=9006997] reads only `.u.CINT`
+/// (bytes 4..8) — its `junk` half is dead. (The hashextra region above that holds
+/// csname meanings read via `.hh`, so it keeps the full range.)
+fn eqtb_sig_range(i: usize) -> (usize, usize) {
+    if (7_892_264..=9_006_997).contains(&i) {
+        (0, 4) // del/int region: only `.u.CINT` (now at offset 0) is live
+    } else {
+        (0, 8)
+    }
+}
+
+/// `hash` words are `two_halves` — the full 8 bytes are live.
+fn hash_sig_range(_i: usize) -> (usize, usize) {
+    (0, 8)
+}
+
+/// Compare two `T` values over a byte sub-range `[off, off+len)`. Only the bytes
+/// a TeX word's *live* fields occupy are significant: a `memoryword` is 16 bytes
+/// but the eqtb code bands read only `.hh` (bytes 0..8) and the del/int region
+/// reads only `.u.CINT` (bytes 4..8). The dead bytes carry copy-loop / allocator
+/// residue, so comparing only the live range lets compaction recognise pages that
+/// hold nothing but band defaults. Freeing such a page is safe because a re-fault
+/// regenerates the same live bytes (and dead bytes are never read).
+fn paged_bytes_eq<T>(a: &T, b: &T, off: usize, len: usize) -> bool {
+    // SAFETY: `off+len <= size_of::<T>()`; read-only byte view of two POD values.
+    unsafe {
+        let pa = (a as *const T as *const u8).add(off);
+        let pb = (b as *const T as *const u8).add(off);
+        core::slice::from_raw_parts(pa, len) == core::slice::from_raw_parts(pb, len)
+    }
+}
+
+pub(crate) struct PagedArray<T: Copy + Default> {
+    base: usize,                  // absolute index of `low[0]`
+    lo: usize,                    // absolute index where paging begins
+    end: usize,                   // absolute index one past the last element
+    low: Vec<T>,                  // dense, covers [base..lo)
+    pages: Vec<Option<Box<[T]>>>, // lazy, covers [lo..end) rounded up to PAGE_LEN
+    default_fn: fn(usize) -> T,   // value at absolute index `i` when its page is absent
+    sig_range: fn(usize) -> (usize, usize), // live byte range (off,len) at index `i`
+}
+
+impl<T: Copy + Default> PagedArray<T> {
+    fn new(
+        base: usize,
+        end: usize,
+        default_fn: fn(usize) -> T,
+        sig_range: fn(usize) -> (usize, usize),
+    ) -> Self {
+        // Page the whole array (no dense prefix): the low region below
+        // CODEPOINT_LO is also ~97% uniform default (eqtb: undefined-cs slots;
+        // hash: zero), so paging it too lets compaction reclaim ~18 MB. `lo ==
+        // base` makes `low` empty and routes every access through the page table.
+        let lo = base;
+        let npages = (end - lo).div_ceil(PAGE_LEN);
+        PagedArray {
+            base,
+            lo,
+            end,
+            low: vec![T::default(); lo - base],
+            pages: (0..npages).map(|_| None).collect(),
+            default_fn,
+            sig_range,
+        }
+    }
+
+    #[inline]
+    fn ptr(&mut self, abs: usize) -> *mut T {
+        if abs < self.lo {
+            // SAFETY: callers only index valid absolute slots [base..end).
+            return unsafe { self.low.as_mut_ptr().add(abs - self.base) };
+        }
+        let rel = abs - self.lo;
+        let pg = rel >> PAGE_BITS;
+        let off = rel & (PAGE_LEN - 1);
+        if self.pages[pg].is_none() {
+            let page_base = self.lo + pg * PAGE_LEN;
+            let f = self.default_fn;
+            let mut page: Vec<T> = Vec::with_capacity(PAGE_LEN);
+            for j in 0..PAGE_LEN {
+                page.push(f(page_base + j));
+            }
+            self.pages[pg] = Some(page.into_boxed_slice());
+        }
+        // SAFETY: page just ensured present; `off < PAGE_LEN`.
+        unsafe {
+            self.pages[pg]
+                .as_mut()
+                .unwrap_unchecked()
+                .as_mut_ptr()
+                .add(off)
+        }
+    }
+
+    /// Free any faulted page whose contents still equal `default_fn` — called
+    /// when sealing a format snapshot so the persisted/resident image keeps only
+    /// pages carrying real overrides.
+    fn compact(&mut self) {
+        let f = self.default_fn;
+        for pg in 0..self.pages.len() {
+            let page_base = self.lo + pg * PAGE_LEN;
+            let is_default = match &self.pages[pg] {
+                None => continue,
+                Some(page) => (0..PAGE_LEN).all(|j| {
+                    let (off, len) = (self.sig_range)(page_base + j);
+                    paged_bytes_eq(&page[j], &f(page_base + j), off, len)
+                }),
+            };
+            if is_default {
+                self.pages[pg] = None;
+            }
+        }
+    }
+
+    fn resident_bytes(&self) -> usize {
+        let elt = core::mem::size_of::<T>();
+        self.low.capacity() * elt
+            + self.pages.iter().filter(|p| p.is_some()).count() * PAGE_LEN * elt
+            + self.pages.capacity() * core::mem::size_of::<Option<Box<[T]>>>()
+    }
+
+    /// Write `v` at absolute index `abs`, faulting its page in. Out-of-range
+    /// indices are ignored (the source-tracking shadow may be sized smaller than
+    /// a node address it is asked to stamp on a degenerate path).
+    #[inline]
+    fn set(&mut self, abs: usize, v: T) {
+        if abs < self.base || abs >= self.end {
+            return;
+        }
+        // SAFETY: `abs` is in `[base, end)`; `ptr` faults the page if absent.
+        unsafe {
+            *self.ptr(abs) = v;
+        }
+    }
+
+    /// Read the value at absolute index `abs` WITHOUT faulting a page: an absent
+    /// page is reported as its `default_fn` value. `&self`, so it is safe to call
+    /// from the read-only IR snapshot path.
+    #[inline]
+    fn get_copy(&self, abs: usize) -> T {
+        if abs < self.base || abs >= self.end {
+            return (self.default_fn)(abs);
+        }
+        if abs < self.lo {
+            return self.low[abs - self.base];
+        }
+        let rel = abs - self.lo;
+        let pg = rel >> PAGE_BITS;
+        let off = rel & (PAGE_LEN - 1);
+        match self.pages.get(pg).and_then(|p| p.as_ref()) {
+            Some(page) => page[off],
+            None => (self.default_fn)(abs),
+        }
+    }
+}
+
+impl<T: Copy + Default> Clone for PagedArray<T> {
+    fn clone(&self) -> Self {
+        PagedArray {
+            base: self.base,
+            lo: self.lo,
+            end: self.end,
+            low: self.low.clone(),
+            pages: self.pages.clone(),
+            default_fn: self.default_fn,
+            sig_range: self.sig_range,
+        }
+    }
+}
+
+/// A `Copy`, raw-pointer-style handle to a [`PagedArray`], standing in for the
+/// `*mut memoryword` / `*mut twohalves` that the translated engine binds as
+/// `let mut eqtb = self.state.zeqtb.as_mut_ptr();` and indexes with
+/// `eqtb.offset(i)`. `offset` mimics `<*mut T>::offset` but routes through the
+/// paged backing (faulting the page if needed). Mutating the backing through a
+/// shared `Copy` handle mirrors the raw-pointer aliasing model the c2rust
+/// translation already relies on for `zmem`/`zeqtb`/`hash`.
+pub(crate) struct PagedView<T: Copy + Default>(*mut PagedArray<T>);
+
+impl<T: Copy + Default> Clone for PagedView<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: Copy + Default> Copy for PagedView<T> {}
+
+impl<T: Copy + Default> PagedView<T> {
+    pub(crate) fn new(arr: &mut PagedArray<T>) -> Self {
+        PagedView(arr as *mut PagedArray<T>)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn null() -> Self {
+        PagedView(core::ptr::null_mut())
+    }
+    #[inline]
+    pub(crate) fn as_mut_ptr(self) -> Self {
+        self
+    }
+    #[inline]
+    pub(crate) fn is_null(self) -> bool {
+        self.0.is_null()
+    }
+    #[inline]
+    pub(crate) fn offset(self, count: isize) -> *mut T {
+        // `count` is the absolute eqtb/hash index (the translation computes the
+        // full index, then offsets once). SAFETY: matches the established
+        // raw-pointer aliasing model; `self.0` is non-null after rebind.
+        unsafe { (*self.0).ptr(count as usize) }
+    }
+}
+
+/// Default `eqtb` word for an absolute codepoint-region index, reproducing what
+/// XeTeX's `initialize` writes across the cat/lc/uc/sf/math/del bands.
+fn eqtb_codepoint_default(i: usize) -> memoryword {
+    // `memoryword` is 16 bytes (the `four_quarters` view needs 12 + padding) but
+    // only its low 8 bytes are ever used by the code bands. `Default` leaves the
+    // upper 8 bytes indeterminate, which would make byte-equality (compaction)
+    // unreliable, so start from a fully-zeroed word.
+    let mut w: memoryword = unsafe { core::mem::zeroed() };
+    if (1_207_592..=7_892_263).contains(&i) {
+        // two_halves code bands: eq_type=undefined_cs (123), eq_level=level_one (1).
+        let rh: i32 = if (1_207_592..=2_321_703).contains(&i) {
+            12 // cat_code -> "other"
+        } else if (4_549_928..=5_664_039).contains(&i) {
+            1000 // sf_code
+        } else if (5_664_040..=6_778_151).contains(&i) {
+            (i - 5_664_040) as i32 // math_code = identity
+        } else {
+            0 // lc_code / uc_code / trailing band
+        };
+        // Writing union fields is safe (no drop glue); the two halves are disjoint.
+        w.hh.u.B0 = 123;
+        w.hh.u.B1 = 1;
+        w.hh.v.RH = rh;
+    } else if (7_892_607..=9_006_718).contains(&i) {
+        // del_code lives in the int view; default is -1.
+        w.u.CINT = -1;
+    } else if i < CODEPOINT_LO || i > xetex_eqtb_top as usize {
+        // The control-sequence-meaning region below the code bands AND the eTeX
+        // hash_high region above eqtb_top are both pre-filled with the
+        // undefined-control-sequence template (eq_type=undefined_cs=104,
+        // eq_level=level_zero=0, equiv=null=-0x0FFFFFFF). Defined csnames and the
+        // few non-default low slots (glue/int params) overwrite it on demand; the
+        // vast majority stay undefined and compact away.
+        w.hh.u.B0 = 104;
+        w.hh.v.RH = -(268435455 as i32);
+    }
+    // else: the small int/dimen gap regions ([7892264..7892606],
+    // [9006719..9006997]) default to zero.
+    w
+}
+
+/// Default `hash` word for the paged region: the codepoint middle is never
+/// populated, so every absent slot is zero.
+fn hash_codepoint_default(_i: usize) -> twohalves {
+    twohalves::default()
+}
+
+pub(crate) struct PortableTexState {
+    pub mem: Vec<memoryword>,
+    buffer_storage: Vec<UnicodeScalar>,
+    nest_storage: Vec<liststaterecord>,
+    savestack_storage: Vec<memoryword>,
+    inputstack_storage: Vec<instaterecord>,
+    inputfile_storage: Vec<unicodefile>,
+    eofseen_storage: Vec<boolean>,
+    linestack_storage: Vec<integer>,
+    grpstack_storage: Vec<savepointer>,
+    ifstack_storage: Vec<halfword>,
+    sourcefilenamestack_storage: Vec<strnumber>,
+    fullsourcefilenamestack_storage: Vec<strnumber>,
+    paramstack_storage: Vec<halfword>,
+    hyphword_storage: Vec<strnumber>,
+    hyphlist_storage: Vec<halfword>,
+    hyphlink_storage: Vec<hyphpointer>,
+    hash_paged: PagedArray<twohalves>,
+    eqtb_paged: PagedArray<memoryword>,
+    strstart_storage: Vec<poolpointer>,
+    strpool_storage: Vec<packedUTF16code>,
+    fontinfo_storage: Vec<fmemoryword>,
+    bcharlabel_storage: Vec<fontindex>,
+    charbase_storage: Vec<integer>,
+    widthbase_storage: Vec<integer>,
+    heightbase_storage: Vec<integer>,
+    depthbase_storage: Vec<integer>,
+    italicbase_storage: Vec<integer>,
+    ligkernbase_storage: Vec<integer>,
+    kernbase_storage: Vec<integer>,
+    extenbase_storage: Vec<integer>,
+    parambase_storage: Vec<integer>,
+    fontarea_storage: Vec<strnumber>,
+    fontname_storage: Vec<strnumber>,
+    fontbc_storage: Vec<UTF16code>,
+    fontec_storage: Vec<UTF16code>,
+    fontbchar_storage: Vec<ninebits>,
+    fontfalsebchar_storage: Vec<ninebits>,
+    fontcheck_storage: Vec<fourquarters>,
+    fontdsize_storage: Vec<scaled>,
+    fontsize_storage: Vec<scaled>,
+    fontflags_storage: Vec<i8>,
+    fontglue_storage: Vec<halfword>,
+    fontlayoutengine_storage: Vec<voidpointer>,
+    fontletterspace_storage: Vec<scaled>,
+    fontmapping_storage: Vec<voidpointer>,
+    fontparams_storage: Vec<fontindex>,
+    fontused_storage: Vec<boolean>,
+    nativetext_storage: Vec<UTF16code>,
+    hyphenchar_storage: Vec<integer>,
+    skewchar_storage: Vec<integer>,
+    triec_storage: Vec<packedUTF16code>,
+    triehash_storage: Vec<triepointer>,
+    triel_storage: Vec<triepointer>,
+    trieo_storage: Vec<trieopcode>,
+    trier_storage: Vec<triepointer>,
+    trietaken_storage: Vec<boolean>,
+    trietrc_storage: Vec<quarterword>,
+    trietrl_storage: Vec<triepointer>,
+    trietro_storage: Vec<triepointer>,
+    // --- Source-tracking subsystem (feature-gated; all TRANSIENT per-render
+    // parse state, NOT meaningfully round-tripped through the format image: the
+    // heap tables below are reset to empty on load and the scalars are reset at
+    // `begin_primary_input`). The default render path leaves `source_tracking`
+    // false and allocates nothing here. ---
+    /// Master gate. When false every hook is a cheap predictable no-op.
+    source_tracking: bool,
+    /// The construct latch: the span of the command currently executing, frozen
+    /// at the `main_control` dispatch boundary before its argument sub-scans run.
+    cmd_span: SrcId,
+    /// Carried from a `macro_call` to the next `begin_token_list(.., macro)` to
+    /// supply the call-site baseline for a macro body's synthesized content.
+    pending_call_span: SrcId,
+    /// Buffer offset of the token currently being lexed (captured at the top of
+    /// `get_next`'s outer loop, so leading skipped material is excluded).
+    src_token_start: integer,
+    /// Multi-line base: the absolute character offset, in the primary input's
+    /// own coordinates, of the first buffer slot of the current line.
+    src_line_base: u32,
+    /// Buffer index of the first slot of the current primary-input line. Each
+    /// line is reloaded at the same `start`, so `loc - this` is a within-line
+    /// column and `src_line_base + (loc - this)` is the absolute char offset.
+    src_line_buf_start: integer,
+    /// Character length of the most-recently-read primary-input line, used to
+    /// advance `src_line_base` (`+= len + 1` for the line break) at the next refill.
+    src_prev_line_len: u32,
+    /// Whether the line accumulator has seen the first primary-input line (so the
+    /// first line gets base 0 and subsequent lines accumulate).
+    src_line_initialized: bool,
+    /// The primary input's namefield (source-file string number); the line
+    /// accumulator and resolver key on this.
+    src_primary_name: strnumber,
+    /// `macro_call` scratch: char offset of the invoking control sequence start.
+    src_call_start: u32,
+    /// `macro_call` scratch: namefield of the level the macro was read from.
+    src_call_name: strnumber,
+    /// `macro_call` scratch: statefield of that level (0 = token list / nested).
+    src_call_state: integer,
+    /// `macro_call` scratch: indexfield (token type) of the level the macro was
+    /// read from, captured at entry before its arguments / the exhausted-list pop
+    /// loop change `curinput`. `< 5` = a user-typed argument / backed-up replay
+    /// (its hull is recovered from the scanned args); `>= 5` = a macro body / every
+    /// list (inherits the baseline). `-1` when read from the buffer.
+    src_call_index: integer,
+    /// `macro_call` scratch: the inherited span fallback for a nested call.
+    src_call_span: SrcId,
+    /// `macro_call` scratch: span of the LAST token consumed while scanning this
+    /// invocation's arguments (the closing `}` of the final brace group), captured
+    /// before the exhausted-list pop loop. Unions into the argument hull so a
+    /// token-list-replayed `\frac{q}{2}` recovers its trailing delimiter.
+    src_call_argspan: SrcId,
+    /// The span of the most recent control-sequence token lexed from the primary
+    /// input BUFFER (set in `src_record_buffer_span` when `curcs != 0`). This is the
+    /// in-fragment USER command currently being expanded: kernel helper macros
+    /// reached through its expansion (`\@sqrt`, `\root`, `\mathpalette`, ... for
+    /// `\sqrt`) are read from token lists, so they never overwrite it. It survives
+    /// the eager pop of token-list input levels, unlike `curinput.spanfield`, so a
+    /// helper invoked from the buffer after a `\futurelet`/`\@ifnextchar` peek can
+    /// still recover the user command's start instead of the peeked token's.
+    src_user_cmd_span: SrcId,
+    /// Like `src_user_cmd_span` but tracks the innermost in-fragment command being
+    /// REPLAYED from an argument-level token list (a nested `\sqrt{..}` inside a
+    /// degree-form radicand, e.g. Cardano's inner radical). `src_user_cmd_span` is set
+    /// only on BUFFER reads, so it goes stale during a mathchoice/macro replay (a later
+    /// `\frac` overwrites it during the outer arg pre-scan). This one is set at
+    /// `src_macro_begin` for argument-level replays and reset on the next buffer read,
+    /// so it holds exactly the command that built the next noad. Consumed ONLY by
+    /// `src_construct_anchor` — never by the arg-hull baseline — so it cannot perturb
+    /// the degree-form extent.
+    src_anchor_cmd: SrcId,
+    /// `macro_call` scratch: `src_user_cmd_span` captured at `src_macro_begin`
+    /// (before the macro reads its arguments, so it is the ENCLOSING user command,
+    /// not one lexed while scanning the args). The buffer-branch baseline anchors
+    /// its START here so every helper in a user command's expansion maps back to
+    /// that command (the transitive macro-call chain).
+    src_call_user_span: SrcId,
+    /// The source span (origin) of the token currently held in `cur_tok` -- set at
+    /// each token read (buffer or token-list) to the read token's own span, and NOT
+    /// moved by later input-level pushes/pops. Lets `back_input` re-stamp a backed-up
+    /// token with its true origin instead of the ambient `spanfield`, which the lexer
+    /// may have advanced past during a `\futurelet`/`\@ifnextchar` look-ahead.
+    src_tok_span: SrcId,
+    /// Intern table: `SrcId` (minus 1) indexes this. Stable first-touch order.
+    src_spans: Vec<RawSpan>,
+    /// Dedup map so equal spans share one `SrcId`.
+    src_dedup: std::collections::HashMap<RawSpan, SrcId>,
+    /// Paged-sparse shadow of `mem`: `node_src[addr]` is the `SrcId` stamped on
+    /// the node at `addr`. Same substrate as the paged eqtb; faults only touched
+    /// pages, so cost is proportional to the fragment, not to `mem`.
+    node_src: PagedArray<u32>,
+    /// Transient per-code-unit source ids for the native-text run currently being
+    /// collected in `main_control`'s main loop: `src_native_offsets[i]` is the
+    /// `SrcId` of the input char whose UTF-16 code unit landed at `nativetext[i]`
+    /// (a 2-unit surrogate fills both slots with one id). Filled per char at the
+    /// `ishyph` seam, then CONSUMED (taken) by `src_resolve_native_glyphs` when
+    /// the run is shaped, so a later re-measure maps to None rather than stale.
+    src_native_offsets: Vec<SrcId>,
+    /// Enclosing-construct stack arena (source-tracking inc2): each frame links
+    /// to its parent, so a single `u32` per node (`node_stack`) snapshots the
+    /// whole nesting. Grows by one cell per construct entered; transient.
+    src_stack_cells: Vec<SrcStackCell>,
+    /// Index (1-based) of the top enclosing-construct frame currently live;
+    /// `0` = no enclosure. Pushed/popped at macro-body and math-group boundaries.
+    cur_stack_head: u32,
+    /// Balanced stack of the OPENING-token span of each live math GROUP (the `{` of a
+    /// `scan_math` field / bare math group, or the `\left` of a `\left..\right`). Pushed
+    /// at the group open, popped at the matching close, where the one general
+    /// `src_construct_extent` rule maps the construct's synthesized marks to
+    /// `[min(noad's command start, group open), consumed end]` -- the
+    /// consumed-source-extent of the group. Replaces the per-construct delimiter/accent
+    /// extenders. Transient (empty between fragments).
+    src_grp_stack: Vec<SrcId>,
+    /// The group-open span popped at the most recent group-9 close, handed from
+    /// `src_scan_math_group_close` (the `9 =>` arm head) to `src_construct_extend_to_loc`
+    /// (the field-fill point later in the same arm).
+    src_grp_closing: SrcId,
+    /// Paged-sparse shadow of `mem` parallel to `node_src`: `node_stack[addr]` is
+    /// the [`Self::cur_stack_head`] that was live when the node at `addr` was
+    /// allocated -- the head of its enclosing-construct chain.
+    node_stack: PagedArray<u32>,
+    pub LRproblems: integer,
+    pub LRptr: halfword,
+    pub OKtointerrupt: boolean,
+    pub terminal_output: NativeFileHandle,
+    pub activenodesize: smallnumber,
+    pub activewidth: [scaled; 7],
+    pub actuallooseness: integer,
+    pub adjusttail: halfword,
+    pub aftertoken: halfword,
+    pub alignptr: halfword,
+    pub alignstate: integer,
+    pub areadelimiter: poolpointer,
+    pub aritherror: boolean,
+    pub avail: halfword,
+    pub background: [scaled; 7],
+    pub baseptr: integer,
+    pub bchar: halfword,
+    pub bcharlabel: *mut fontindex,
+    pub bestbet: halfword,
+    pub bestheightplusdepth: scaled,
+    pub bestline: halfword,
+    pub bestplace: [halfword; 4],
+    pub bestplglue: [scaled; 4],
+    pub bestplline: [halfword; 4],
+    pub bestplshort: [scaled; 4],
+    pub breadthmax: integer,
+    pub breakwidth: [scaled; 7],
+    pub buffer: *mut UnicodeScalar,
+    pub bufsize: integer,
+    pub c: quarterword,
+    pub cancelboundary: boolean,
+    pub charbase: *mut integer,
+    pub condptr: halfword,
+    pub cscount: integer,
+    pub curactivewidth: [scaled; 7],
+    pub curalign: halfword,
+    pub curarea: strnumber,
+    pub curboundary: integer,
+    pub curbox: halfword,
+    pub curc: integer,
+    pub curchr: halfword,
+    pub curcmd: eightbits,
+    pub curcs: halfword,
+    pub curdir: smallnumber,
+    pub curext: strnumber,
+    pub curf: internalfontnumber,
+    pub curgroup: groupcode,
+    pub curhead: halfword,
+    pub curi: fourquarters,
+    pub curif: smallnumber,
+    pub curinput: instaterecord,
+    pub curl: halfword,
+    pub curlang: eightbits,
+    pub curlevel: quarterword,
+    pub curlist: liststaterecord,
+    pub curloop: halfword,
+    pub curmark: [halfword; 5],
+    pub curmlist: halfword,
+    pub curmu: scaled,
+    pub curname: strnumber,
+    pub curorder: glueord,
+    pub curp: halfword,
+    pub curprehead: halfword,
+    pub curpretail: halfword,
+    pub curptr: halfword,
+    pub curq: halfword,
+    pub curr: halfword,
+    pub curs: integer,
+    pub cursize: integer,
+    pub curspan: halfword,
+    pub curstyle: smallnumber,
+    pub curtail: halfword,
+    pub curtok: halfword,
+    pub curval: integer,
+    pub curval1: integer,
+    pub curvallevel: eightbits,
+    pub deadcycles: integer,
+    pub defref: halfword,
+    pub deletionsallowed: boolean,
+    pub depthbase: *mut integer,
+    pub depththreshold: integer,
+    pub dig: [eightbits; 23],
+    pub discptr: [halfword; 4],
+    pub discwidth: scaled,
+    pub doingleaders: boolean,
+    pub doingspecial: boolean,
+    pub dolastlinefit: boolean,
+    pub downptr: halfword,
+    pub dvibufsize: integer,
+    pub dvigone: integer,
+    pub dvilimit: integer,
+    pub dvioffset: integer,
+    pub dviptr: integer,
+    pub dynused: integer,
+    pub eTeXmode: eightbits,
+    pub easyline: halfword,
+    pub editline: integer,
+    pub editnamelength: integer,
+    pub editnamestart: poolpointer,
+    pub eightbitp: i32,
+    pub emptyfield: twohalves,
+    pub eofseen: *mut boolean,
+    pub epochseconds: integer,
+    pub eqtbtop: halfword,
+    pub errorcount: schar,
+    pub errorline: integer,
+    pub expanddepth: integer,
+    pub expanddepthcount: integer,
+    pub extdelimiter: poolpointer,
+    pub extenbase: *mut integer,
+    pub f: internalfontnumber,
+    pub falsebchar: halfword,
+    pub fewestdemerits: integer,
+    pub filelineerrorstylep: i32,
+    pub filenamequotechar: UTF16code,
+    pub fileoffset: integer,
+    pub fillwidth: [scaled; 3],
+    pub finalpass: boolean,
+    pub first: integer,
+    pub firstcount: integer,
+    pub firstindent: scaled,
+    pub firstp: halfword,
+    pub firstwidth: scaled,
+    pub fmemptr: fontindex,
+    pub fontarea: *mut strnumber,
+    pub fontbc: *mut UTF16code,
+    pub fontbchar: *mut ninebits,
+    pub fontcheck: *mut fourquarters,
+    pub fontdsize: *mut scaled,
+    pub fontec: *mut UTF16code,
+    pub fontfalsebchar: *mut ninebits,
+    pub fontflags: *mut i8,
+    pub fontglue: *mut halfword,
+    pub fontinfo: *mut fmemoryword,
+    pub fontinshortdisplay: integer,
+    pub fontlayoutengine: *mut voidpointer,
+    pub fontletterspace: *mut scaled,
+    pub fontmapping: *mut voidpointer,
+    pub fontmax: integer,
+    pub fontmemsize: integer,
+    pub fontname: *mut strnumber,
+    pub fontparams: *mut fontindex,
+    pub fontptr: internalfontnumber,
+    pub fontsize: *mut scaled,
+    pub fontused: *mut boolean,
+    pub forceeof: boolean,
+    pub formatident: strnumber,
+    pub fullsourcefilenamestack: *mut strnumber,
+    pub g: halfword,
+    pub globalprevp: halfword,
+    pub grpstack: *mut savepointer,
+    pub ha: halfword,
+    pub halfbuf: integer,
+    pub halferrorline: integer,
+    pub haltingonerrorp: boolean,
+    pub haltonerrorp: i32,
+    pub hash: PagedView<twohalves>,
+    pub hashextra: halfword,
+    pub hashhigh: halfword,
+    pub hashused: halfword,
+    pub hb: halfword,
+    pub hc: [integer; 4099],
+    pub heightbase: *mut integer,
+    pub helpline: [strnumber; 6],
+    pub helpptr: eightbits,
+    pub hf: internalfontnumber,
+    pub himemmin: halfword,
+    pub history: eightbits,
+    pub hliststack: [halfword; 513],
+    pub hliststacklevel: i16,
+    pub hn: smallnumber,
+    pub hu: [integer; 4097],
+    pub hyf: [eightbits; 4097],
+    pub hyfbchar: halfword,
+    pub hyfchar: integer,
+    pub hyfdistance: [smallnumber; 35112],
+    pub hyfnext: [trieopcode; 35112],
+    pub hyfnum: [smallnumber; 35112],
+    pub hyphcount: integer,
+    pub hyphenchar: *mut integer,
+    pub hyphenpassed: smallnumber,
+    pub hyphindex: triepointer,
+    pub hyphlink: *mut hyphpointer,
+    pub hyphlist: *mut halfword,
+    pub hyphnext: integer,
+    pub hyphsize: integer,
+    pub hyphstart: triepointer,
+    pub hyphword: *mut strnumber,
+    pub iflimit: eightbits,
+    pub ifline: integer,
+    pub ifstack: *mut halfword,
+    pub initcurlang: eightbits,
+    pub initlft: boolean,
+    pub initlhyf: integer,
+    pub initlig: boolean,
+    pub initlist: halfword,
+    pub initpoolptr: poolpointer,
+    pub initrhyf: integer,
+    pub initstrptr: strnumber,
+    pub iniversion: boolean,
+    pub inopen: integer,
+    pub inputfile: *mut unicodefile,
+    pub inputptr: integer,
+    pub inputstack: *mut instaterecord,
+    pub insdisc: boolean,
+    pub insertpenalties: integer,
+    pub insertsrcspecialauto: boolean,
+    pub insertsrcspecialeverymath: boolean,
+    pub insertsrcspecialeverypar: boolean,
+    pub insertsrcspecialeveryvbox: boolean,
+    pub interaction: eightbits,
+    pub interactionoption: eightbits,
+    pub interrupt: integer,
+    pub ishyph: boolean,
+    pub isincsname: boolean,
+    pub italicbase: *mut integer,
+    pub jobname: strnumber,
+    pub jrandom: eightbits,
+    pub justbox: halfword,
+    pub kernbase: *mut integer,
+    pub resource_search_state: ResourceSearchState,
+    pub l: eightbits,
+    pub last: integer,
+    pub lastbadness: integer,
+    pub lastbop: integer,
+    pub lastglue: halfword,
+    pub lastkern: scaled,
+    pub lastleftmostchar: halfword,
+    pub lastlinefill: halfword,
+    pub lastnodetype: integer,
+    pub lastpenalty: integer,
+    pub lastrightmostchar: halfword,
+    pub lastspecialline: halfword,
+    pub lfthit: boolean,
+    pub lhyf: integer,
+    pub ligaturepresent: boolean,
+    pub ligkernbase: *mut integer,
+    pub ligstack: halfword,
+    pub line: integer,
+    pub linediff: integer,
+    pub linestack: *mut integer,
+    pub loadedfontdesignsize: scaled,
+    pub loadedfontflags: i8,
+    pub loadedfontletterspace: scaled,
+    pub loadedfontmapping: voidpointer,
+    pub logfile: alphafile,
+    pub logopened: boolean,
+    pub lomemmax: halfword,
+    pub longhelpseen: boolean,
+    pub longstate: eightbits,
+    pub magicoffset: integer,
+    pub magset: integer,
+    pub mainf: internalfontnumber,
+    pub mainh: halfword,
+    pub maini: fourquarters,
+    pub mainj: fourquarters,
+    pub maink: fontindex,
+    pub mainp: halfword,
+    pub mainpp: halfword,
+    pub mainppp: halfword,
+    pub mains: integer,
+    pub mappedtext: *mut UTF16code,
+    pub maxbufstack: integer,
+    pub maxh: scaled,
+    pub maxhyphchar: integer,
+    pub maxinopen: integer,
+    pub maxinstack: integer,
+    pub maxneststack: integer,
+    pub maxopused: trieopcode,
+    pub maxparamstack: integer,
+    pub maxprintline: integer,
+    pub maxpush: integer,
+    pub maxreghelpline: strnumber,
+    pub maxregnum: halfword,
+    pub maxsavestack: integer,
+    pub maxstrings: integer,
+    pub maxv: scaled,
+    pub membot: integer,
+    pub memend: halfword,
+    pub memmax: integer,
+    pub memmin: integer,
+    pub memtop: integer,
+    pub microseconds: integer,
+    pub minimaldemerits: [integer; 4],
+    pub minimumdemerits: integer,
+    pub mlistpenalties: boolean,
+    pub mltexenabledp: boolean,
+    pub mltexp: boolean,
+    pub mubytecswrite: [halfword; 128],
+    pub mubytekeep: integer,
+    pub mubyteprefix: integer,
+    pub mubyteread: [halfword; 256],
+    pub mubyteskip: integer,
+    pub mubytestart: boolean,
+    pub mubytestoken: halfword,
+    pub mubytetoken: halfword,
+    pub nameinprogress: boolean,
+    pub namelength: integer,
+    pub nameoffile: *mut UTF8code,
+    pub nativefonttypeflag: integer,
+    pub nativelen: integer,
+    pub nativetext: *mut UTF16code,
+    pub nativetextsize: integer,
+    pub nest: *mut liststaterecord,
+    pub nestptr: integer,
+    pub nestsize: integer,
+    pub nonewcontrolsequence: boolean,
+    pub noshrinkerroryet: boolean,
+    pub nullcharacter: fourquarters,
+    pub nulldelimiter: fourquarters,
+    pub oldselectorignorederr: eightbits,
+    pub oldsetting: eightbits,
+    pub openparens: integer,
+    pub opstart: [integer; 256],
+    pub outputactive: boolean,
+    pub outputcanend: boolean,
+    pub packbeginline: integer,
+    pub pagecontents: eightbits,
+    pub pagemaxdepth: scaled,
+    pub pagesofar: [scaled; 8],
+    pub pagetail: halfword,
+    pub parambase: *mut integer,
+    pub paramptr: integer,
+    pub paramsize: integer,
+    pub paramstack: *mut halfword,
+    pub parloc: halfword,
+    pub partoken: halfword,
+    pub passive: halfword,
+    pub passnumber: halfword,
+    pub pdflastxpos: integer,
+    pub pdflastypos: integer,
+    pub poolptr: poolpointer,
+    pub poolsize: integer,
+    pub preadjusttail: halfword,
+    pub prevclass: integer,
+    pub prim: [twohalves; 2101],
+    pub primused: halfword,
+    pub printednode: halfword,
+    pub pseudofiles: halfword,
+    pub pstack: [halfword; 9],
+    pub quotedfilename: boolean,
+    pub radix: smallnumber,
+    pub randoms: [integer; 55],
+    pub randomseed: scaled,
+    pub readfile: [unicodefile; 16],
+    pub readopen: [eightbits; 17],
+    pub readyalready: integer,
+    pub restrictedshell: i32,
+    pub rhyf: integer,
+    pub rightptr: halfword,
+    pub rover: halfword,
+    pub rthit: boolean,
+    pub sachain: halfword,
+    pub salevel: quarterword,
+    pub sanull: memoryword,
+    pub saroot: [halfword; 8],
+    pub savearitherror: boolean,
+    pub savenativelen: integer,
+    pub saveptr: integer,
+    pub savesize: integer,
+    pub savestack: *mut memoryword,
+    pub scannerstatus: eightbits,
+    pub secondindent: scaled,
+    pub secondpass: boolean,
+    pub secondwidth: scaled,
+    pub selector: eightbits,
+    pub setboxallowed: boolean,
+    pub shellenabledp: i32,
+    pub shownmode: i16,
+    pub skewchar: *mut integer,
+    pub skipline: integer,
+    pub sourcefilenamestack: *mut strnumber,
+    pub spaceclass: integer,
+    pub speclog: [integer; 29],
+    pub stacksize: integer,
+    pub stopatspace: boolean,
+    pub stringvacancies: integer,
+    pub strpool: *mut packedUTF16code,
+    pub strptr: strnumber,
+    pub strstart: *mut poolpointer,
+    pub tally: integer,
+    pub tempptr: halfword,
+    pub termin: unicodefile,
+    pub termoffset: integer,
+    pub texinputtype: i32,
+    pub texremainder: scaled,
+    pub tfmfile: bytefile,
+    pub tfmtemp: i32,
+    pub threshold: integer,
+    pub totalpages: integer,
+    pub totalshrink: [scaled; 4],
+    pub totalstretch: [scaled; 4],
+    pub trickbuf: [UnicodeScalar; 256],
+    pub trickcount: integer,
+    pub triec: *mut packedUTF16code,
+    pub triehash: *mut triepointer,
+    pub triel: *mut triepointer,
+    pub triemax: triepointer,
+    pub triemin: [triepointer; 65536],
+    pub trienotready: boolean,
+    pub trieo: *mut trieopcode,
+    pub trieoplang: [eightbits; 35112],
+    pub trieopptr: integer,
+    pub trieopval: [trieopcode; 35112],
+    pub trieptr: triepointer,
+    pub trier: *mut triepointer,
+    pub triesize: integer,
+    pub trietaken: *mut boolean,
+    pub trietrc: *mut quarterword,
+    pub trietrl: *mut triepointer,
+    pub trietro: *mut triepointer,
+    pub trieused: [trieopcode; 256],
+    pub twotothe: [integer; 31],
+    pub useerrhelp: boolean,
+    pub varused: integer,
+    pub warningindex: halfword,
+    pub widthbase: *mut integer,
+    pub writefile: [alphafile; 16],
+    pub writeloc: halfword,
+    pub writeopen: [boolean; 18],
+    pub xchr: [ASCIIcode; 256],
+    pub xtxligaturepresent: boolean,
+    pub zeqtb: PagedView<memoryword>,
+    pub zmem: *mut memoryword,
+    pub zzzaa: [quarterword; 1114734],
+    pub zzzab: [integer; 70223],
+}
+
+/// Magic header for a serialized portable format image (see
+/// [`PortableTexState::to_portable_bytes`]).
+const PORTABLE_FORMAT_MAGIC: [u8; 8] = *b"MTXfmt\x04\x00";
+
+/// The complete set of heap-owning fields of [`PortableTexState`] — exactly the
+/// fields that [`PortableTexState::clone_boxed`] deep-copies (everything else is
+/// POD copied bitwise via the raw struct image). Both the serializer and the
+/// deserializer walk this single list so they can never drift out of sync.
+macro_rules! portable_owning_vecs {
+    ($cb:ident) => {
+        $cb!(buffer_storage, UnicodeScalar);
+        $cb!(nest_storage, liststaterecord);
+        $cb!(savestack_storage, memoryword);
+        $cb!(inputstack_storage, instaterecord);
+        $cb!(inputfile_storage, unicodefile);
+        $cb!(eofseen_storage, boolean);
+        $cb!(linestack_storage, integer);
+        $cb!(grpstack_storage, savepointer);
+        $cb!(ifstack_storage, halfword);
+        $cb!(sourcefilenamestack_storage, strnumber);
+        $cb!(fullsourcefilenamestack_storage, strnumber);
+        $cb!(paramstack_storage, halfword);
+        $cb!(hyphword_storage, strnumber);
+        $cb!(hyphlist_storage, halfword);
+        $cb!(hyphlink_storage, hyphpointer);
+        $cb!(strstart_storage, poolpointer);
+        $cb!(strpool_storage, packedUTF16code);
+        $cb!(fontinfo_storage, fmemoryword);
+        $cb!(bcharlabel_storage, fontindex);
+        $cb!(charbase_storage, integer);
+        $cb!(widthbase_storage, integer);
+        $cb!(heightbase_storage, integer);
+        $cb!(depthbase_storage, integer);
+        $cb!(italicbase_storage, integer);
+        $cb!(ligkernbase_storage, integer);
+        $cb!(kernbase_storage, integer);
+        $cb!(extenbase_storage, integer);
+        $cb!(parambase_storage, integer);
+        $cb!(fontarea_storage, strnumber);
+        $cb!(fontname_storage, strnumber);
+        $cb!(fontbc_storage, UTF16code);
+        $cb!(fontec_storage, UTF16code);
+        $cb!(fontbchar_storage, ninebits);
+        $cb!(fontfalsebchar_storage, ninebits);
+        $cb!(fontcheck_storage, fourquarters);
+        $cb!(fontdsize_storage, scaled);
+        $cb!(fontsize_storage, scaled);
+        $cb!(fontflags_storage, i8);
+        $cb!(fontglue_storage, halfword);
+        $cb!(fontlayoutengine_storage, voidpointer);
+        $cb!(fontletterspace_storage, scaled);
+        $cb!(fontmapping_storage, voidpointer);
+        $cb!(fontparams_storage, fontindex);
+        $cb!(fontused_storage, boolean);
+        $cb!(nativetext_storage, UTF16code);
+        $cb!(hyphenchar_storage, integer);
+        $cb!(skewchar_storage, integer);
+        $cb!(triec_storage, packedUTF16code);
+        $cb!(triehash_storage, triepointer);
+        $cb!(triel_storage, triepointer);
+        $cb!(trieo_storage, trieopcode);
+        $cb!(trier_storage, triepointer);
+        $cb!(trietaken_storage, boolean);
+        $cb!(trietrc_storage, quarterword);
+        $cb!(trietrl_storage, triepointer);
+        $cb!(trietro_storage, triepointer);
+    };
+}
+
+/// Serialize a POD `Vec` as its full length plus only the *used* index ranges
+/// (the rest is reconstructed as zeros). This is how a `.fmt` dump stays small:
+/// most engine arrays are allocated to a generous capacity but only sparsely
+/// populated. `ranges` are `(start, len)` element spans, in order.
+fn portable_write_vec_ranges<T: Copy>(out: &mut Vec<u8>, v: &[T], ranges: &[(usize, usize)]) {
+    let elt = core::mem::size_of::<T>();
+    out.extend_from_slice(&(v.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(ranges.len() as u32).to_le_bytes());
+    for &(start, len) in ranges {
+        out.extend_from_slice(&(start as u64).to_le_bytes());
+        out.extend_from_slice(&(len as u64).to_le_bytes());
+        // SAFETY: callers pass ranges within `v`; `T: Copy` POD.
+        let bytes =
+            unsafe { core::slice::from_raw_parts(v.as_ptr().add(start) as *const u8, len * elt) };
+        out.extend_from_slice(bytes);
+    }
+}
+
+/// Inverse of [`portable_write_vec_ranges`]: allocate a zeroed `Vec<T>` of the
+/// stored full length and fill in the saved ranges. Returns `None` on
+/// truncation / overflow / out-of-bounds range.
+fn portable_read_vec_ranges<T: Copy>(bytes: &[u8], cursor: &mut usize) -> Option<Vec<T>> {
+    let elt = core::mem::size_of::<T>();
+    let full = u64::from_le_bytes(bytes.get(*cursor..*cursor + 8)?.try_into().ok()?) as usize;
+    *cursor += 8;
+    let nranges = u32::from_le_bytes(bytes.get(*cursor..*cursor + 4)?.try_into().ok()?) as usize;
+    *cursor += 4;
+    let total = full.checked_mul(elt)?;
+    let mut v = Vec::<T>::with_capacity(full);
+    // SAFETY: zero-initialize `full` elements (zero bytes are a valid value for
+    // every POD type dumped here), then copy each saved range into place.
+    unsafe {
+        core::ptr::write_bytes(v.as_mut_ptr() as *mut u8, 0, total);
+        for _ in 0..nranges {
+            let start = u64::from_le_bytes(bytes.get(*cursor..*cursor + 8)?.try_into().ok()?) as usize;
+            *cursor += 8;
+            let len = u64::from_le_bytes(bytes.get(*cursor..*cursor + 8)?.try_into().ok()?) as usize;
+            *cursor += 8;
+            if start.checked_add(len)? > full {
+                return None;
+            }
+            let nbytes = len.checked_mul(elt)?;
+            let src = bytes.get(*cursor..*cursor + nbytes)?;
+            *cursor += nbytes;
+            core::ptr::copy_nonoverlapping(
+                src.as_ptr(),
+                (v.as_mut_ptr() as *mut u8).add(start * elt),
+                nbytes,
+            );
+        }
+        v.set_len(full);
+    }
+    Some(v)
+}
+
+/// Number of leading elements of `v` up to and including the last non-zero
+/// element (0 if every element is all-zero bytes). Used to drop the zero tail of
+/// sparsely-populated engine arrays when dumping a format image.
+fn portable_used_prefix_len<T>(v: &[T]) -> usize {
+    let bytes =
+        unsafe { core::slice::from_raw_parts(v.as_ptr() as *const u8, core::mem::size_of_val(v)) };
+    match bytes.iter().rposition(|&b| b != 0) {
+        Some(last) => last / core::mem::size_of::<T>() + 1,
+        None => 0,
+    }
+}
+
+/// Serialize a [`PagedArray`]: its geometry, the dense low region (zero tail
+/// dropped), then only the faulted pages (page index + raw bytes). Absent pages
+/// are regenerated from `default_fn` on load, so they cost nothing on disk.
+fn portable_write_paged<T: Copy + Default>(out: &mut Vec<u8>, arr: &PagedArray<T>) {
+    let elt = core::mem::size_of::<T>();
+    out.extend_from_slice(&(arr.base as u64).to_le_bytes());
+    out.extend_from_slice(&(arr.lo as u64).to_le_bytes());
+    out.extend_from_slice(&(arr.end as u64).to_le_bytes());
+    let used = portable_used_prefix_len(arr.low.as_slice());
+    let ranges: &[(usize, usize)] = if used == 0 { &[] } else { &[(0, used)] };
+    portable_write_vec_ranges::<T>(out, arr.low.as_slice(), ranges);
+    let present: Vec<usize> = arr
+        .pages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| p.as_ref().map(|_| i))
+        .collect();
+    out.extend_from_slice(&(arr.pages.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(present.len() as u32).to_le_bytes());
+    for pg in present {
+        out.extend_from_slice(&(pg as u64).to_le_bytes());
+        let page = arr.pages[pg].as_ref().unwrap();
+        // SAFETY: `page` has exactly PAGE_LEN `T: Copy` POD elements.
+        let pbytes =
+            unsafe { core::slice::from_raw_parts(page.as_ptr() as *const u8, PAGE_LEN * elt) };
+        out.extend_from_slice(pbytes);
+    }
+}
+
+/// Inverse of [`portable_write_paged`]. `default_fn` must match the array being
+/// reloaded (eqtb vs hash) so absent pages regenerate identically.
+fn portable_read_paged<T: Copy + Default>(
+    bytes: &[u8],
+    cursor: &mut usize,
+    default_fn: fn(usize) -> T,
+    sig_range: fn(usize) -> (usize, usize),
+) -> Option<PagedArray<T>> {
+    let elt = core::mem::size_of::<T>();
+    let read_u64 = |cursor: &mut usize| -> Option<usize> {
+        let v = u64::from_le_bytes(bytes.get(*cursor..*cursor + 8)?.try_into().ok()?) as usize;
+        *cursor += 8;
+        Some(v)
+    };
+    let base = read_u64(cursor)?;
+    let lo = read_u64(cursor)?;
+    let end = read_u64(cursor)?;
+    let low: Vec<T> = portable_read_vec_ranges(bytes, cursor)?;
+    let npages = read_u64(cursor)?;
+    let npresent = u32::from_le_bytes(bytes.get(*cursor..*cursor + 4)?.try_into().ok()?) as usize;
+    *cursor += 4;
+    let mut pages: Vec<Option<Box<[T]>>> = (0..npages).map(|_| None).collect();
+    for _ in 0..npresent {
+        let pg = read_u64(cursor)?;
+        if pg >= npages {
+            return None;
+        }
+        let nbytes = PAGE_LEN.checked_mul(elt)?;
+        let src = bytes.get(*cursor..*cursor + nbytes)?;
+        *cursor += nbytes;
+        let mut page: Vec<T> = Vec::with_capacity(PAGE_LEN);
+        // SAFETY: copy PAGE_LEN POD elements; zero bytes are valid for `T`.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), page.as_mut_ptr() as *mut u8, nbytes);
+            page.set_len(PAGE_LEN);
+        }
+        pages[pg] = Some(page.into_boxed_slice());
+    }
+    Some(PagedArray {
+        base,
+        lo,
+        end,
+        low,
+        pages,
+        default_fn,
+        sig_range,
+    })
+}
+
+impl PortableTexState {
+    fn new_boxed_default() -> Box<Self> {
+        let mut state = Box::<Self>::new_uninit();
+        let state_ptr = state.as_mut_ptr();
+        unsafe {
+            core::ptr::write_bytes(state_ptr, 0, 1);
+            core::ptr::addr_of_mut!((*state_ptr).mem).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).buffer_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).nest_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).savestack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).inputstack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).inputfile_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).eofseen_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).linestack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).grpstack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).ifstack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).sourcefilenamestack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fullsourcefilenamestack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).paramstack_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).hyphword_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).hyphlist_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).hyphlink_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).hash_paged)
+                .write(PagedArray::new(0, 0, hash_codepoint_default, hash_sig_range));
+            core::ptr::addr_of_mut!((*state_ptr).eqtb_paged)
+                .write(PagedArray::new(0, 0, eqtb_codepoint_default, eqtb_sig_range));
+            core::ptr::addr_of_mut!((*state_ptr).strstart_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).strpool_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontinfo_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).bcharlabel_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).charbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).widthbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).heightbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).depthbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).italicbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).ligkernbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).kernbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).extenbase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).parambase_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontarea_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontname_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontbc_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontec_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontbchar_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontfalsebchar_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontcheck_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontdsize_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontsize_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontflags_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontglue_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontlayoutengine_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontletterspace_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontmapping_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontparams_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).fontused_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).nativetext_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).hyphenchar_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).skewchar_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).triec_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).triehash_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).triel_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).trieo_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).trier_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).trietaken_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).trietrc_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).trietrl_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).trietro_storage).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).src_spans).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).src_dedup)
+                .write(std::collections::HashMap::new());
+            core::ptr::addr_of_mut!((*state_ptr).node_src)
+                .write(PagedArray::new(0, 0, node_src_default, node_src_sig));
+            core::ptr::addr_of_mut!((*state_ptr).src_native_offsets).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).src_stack_cells).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).cur_stack_head).write(0);
+            core::ptr::addr_of_mut!((*state_ptr).node_stack)
+                .write(PagedArray::new(0, 0, node_stack_default, node_stack_sig));
+            state.assume_init()
+        }
+    }
+
+    fn clone_boxed(&self) -> Box<Self> {
+        let mem = self.mem.clone();
+        let buffer_storage = self.buffer_storage.clone();
+        let nest_storage = self.nest_storage.clone();
+        let savestack_storage = self.savestack_storage.clone();
+        let inputstack_storage = self.inputstack_storage.clone();
+        let inputfile_storage = self.inputfile_storage.clone();
+        let eofseen_storage = self.eofseen_storage.clone();
+        let linestack_storage = self.linestack_storage.clone();
+        let grpstack_storage = self.grpstack_storage.clone();
+        let ifstack_storage = self.ifstack_storage.clone();
+        let sourcefilenamestack_storage = self.sourcefilenamestack_storage.clone();
+        let fullsourcefilenamestack_storage = self.fullsourcefilenamestack_storage.clone();
+        let paramstack_storage = self.paramstack_storage.clone();
+        let hyphword_storage = self.hyphword_storage.clone();
+        let hyphlist_storage = self.hyphlist_storage.clone();
+        let hyphlink_storage = self.hyphlink_storage.clone();
+        let hash_paged = self.hash_paged.clone();
+        let eqtb_paged = self.eqtb_paged.clone();
+        let strstart_storage = self.strstart_storage.clone();
+        let strpool_storage = self.strpool_storage.clone();
+        let fontinfo_storage = self.fontinfo_storage.clone();
+        let bcharlabel_storage = self.bcharlabel_storage.clone();
+        let charbase_storage = self.charbase_storage.clone();
+        let widthbase_storage = self.widthbase_storage.clone();
+        let heightbase_storage = self.heightbase_storage.clone();
+        let depthbase_storage = self.depthbase_storage.clone();
+        let italicbase_storage = self.italicbase_storage.clone();
+        let ligkernbase_storage = self.ligkernbase_storage.clone();
+        let kernbase_storage = self.kernbase_storage.clone();
+        let extenbase_storage = self.extenbase_storage.clone();
+        let parambase_storage = self.parambase_storage.clone();
+        let fontarea_storage = self.fontarea_storage.clone();
+        let fontname_storage = self.fontname_storage.clone();
+        let fontbc_storage = self.fontbc_storage.clone();
+        let fontec_storage = self.fontec_storage.clone();
+        let fontbchar_storage = self.fontbchar_storage.clone();
+        let fontfalsebchar_storage = self.fontfalsebchar_storage.clone();
+        let fontcheck_storage = self.fontcheck_storage.clone();
+        let fontdsize_storage = self.fontdsize_storage.clone();
+        let fontsize_storage = self.fontsize_storage.clone();
+        let fontflags_storage = self.fontflags_storage.clone();
+        let fontglue_storage = self.fontglue_storage.clone();
+        let fontlayoutengine_storage = self.fontlayoutengine_storage.clone();
+        let fontletterspace_storage = self.fontletterspace_storage.clone();
+        let fontmapping_storage = self.fontmapping_storage.clone();
+        let fontparams_storage = self.fontparams_storage.clone();
+        let fontused_storage = self.fontused_storage.clone();
+        let nativetext_storage = self.nativetext_storage.clone();
+        let hyphenchar_storage = self.hyphenchar_storage.clone();
+        let skewchar_storage = self.skewchar_storage.clone();
+        let triec_storage = self.triec_storage.clone();
+        let triehash_storage = self.triehash_storage.clone();
+        let triel_storage = self.triel_storage.clone();
+        let trieo_storage = self.trieo_storage.clone();
+        let trier_storage = self.trier_storage.clone();
+        let trietaken_storage = self.trietaken_storage.clone();
+        let trietrc_storage = self.trietrc_storage.clone();
+        let trietrl_storage = self.trietrl_storage.clone();
+        let trietro_storage = self.trietro_storage.clone();
+        let src_spans = self.src_spans.clone();
+        let src_dedup = self.src_dedup.clone();
+        let node_src = self.node_src.clone();
+        let src_native_offsets = self.src_native_offsets.clone();
+        let src_stack_cells = self.src_stack_cells.clone();
+        let node_stack = self.node_stack.clone();
+        let mut state = Box::<Self>::new_uninit();
+        let state_ptr = state.as_mut_ptr();
+        unsafe {
+            core::ptr::copy_nonoverlapping(self as *const Self, state_ptr, 1);
+            core::ptr::addr_of_mut!((*state_ptr).mem).write(mem);
+            core::ptr::addr_of_mut!((*state_ptr).buffer_storage).write(buffer_storage);
+            core::ptr::addr_of_mut!((*state_ptr).nest_storage).write(nest_storage);
+            core::ptr::addr_of_mut!((*state_ptr).savestack_storage).write(savestack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).inputstack_storage).write(inputstack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).inputfile_storage).write(inputfile_storage);
+            core::ptr::addr_of_mut!((*state_ptr).eofseen_storage).write(eofseen_storage);
+            core::ptr::addr_of_mut!((*state_ptr).linestack_storage).write(linestack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).grpstack_storage).write(grpstack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).ifstack_storage).write(ifstack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).sourcefilenamestack_storage)
+                .write(sourcefilenamestack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fullsourcefilenamestack_storage)
+                .write(fullsourcefilenamestack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).paramstack_storage).write(paramstack_storage);
+            core::ptr::addr_of_mut!((*state_ptr).hyphword_storage).write(hyphword_storage);
+            core::ptr::addr_of_mut!((*state_ptr).hyphlist_storage).write(hyphlist_storage);
+            core::ptr::addr_of_mut!((*state_ptr).hyphlink_storage).write(hyphlink_storage);
+            core::ptr::addr_of_mut!((*state_ptr).hash_paged).write(hash_paged);
+            core::ptr::addr_of_mut!((*state_ptr).eqtb_paged).write(eqtb_paged);
+            core::ptr::addr_of_mut!((*state_ptr).strstart_storage).write(strstart_storage);
+            core::ptr::addr_of_mut!((*state_ptr).strpool_storage).write(strpool_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontinfo_storage).write(fontinfo_storage);
+            core::ptr::addr_of_mut!((*state_ptr).bcharlabel_storage).write(bcharlabel_storage);
+            core::ptr::addr_of_mut!((*state_ptr).charbase_storage).write(charbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).widthbase_storage).write(widthbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).heightbase_storage).write(heightbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).depthbase_storage).write(depthbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).italicbase_storage).write(italicbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).ligkernbase_storage).write(ligkernbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).kernbase_storage).write(kernbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).extenbase_storage).write(extenbase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).parambase_storage).write(parambase_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontarea_storage).write(fontarea_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontname_storage).write(fontname_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontbc_storage).write(fontbc_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontec_storage).write(fontec_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontbchar_storage).write(fontbchar_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontfalsebchar_storage).write(fontfalsebchar_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontcheck_storage).write(fontcheck_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontdsize_storage).write(fontdsize_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontsize_storage).write(fontsize_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontflags_storage).write(fontflags_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontglue_storage).write(fontglue_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontlayoutengine_storage).write(fontlayoutengine_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontletterspace_storage).write(fontletterspace_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontmapping_storage).write(fontmapping_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontparams_storage).write(fontparams_storage);
+            core::ptr::addr_of_mut!((*state_ptr).fontused_storage).write(fontused_storage);
+            core::ptr::addr_of_mut!((*state_ptr).nativetext_storage).write(nativetext_storage);
+            core::ptr::addr_of_mut!((*state_ptr).hyphenchar_storage).write(hyphenchar_storage);
+            core::ptr::addr_of_mut!((*state_ptr).skewchar_storage).write(skewchar_storage);
+            core::ptr::addr_of_mut!((*state_ptr).triec_storage).write(triec_storage);
+            core::ptr::addr_of_mut!((*state_ptr).triehash_storage).write(triehash_storage);
+            core::ptr::addr_of_mut!((*state_ptr).triel_storage).write(triel_storage);
+            core::ptr::addr_of_mut!((*state_ptr).trieo_storage).write(trieo_storage);
+            core::ptr::addr_of_mut!((*state_ptr).trier_storage).write(trier_storage);
+            core::ptr::addr_of_mut!((*state_ptr).trietaken_storage).write(trietaken_storage);
+            core::ptr::addr_of_mut!((*state_ptr).trietrc_storage).write(trietrc_storage);
+            core::ptr::addr_of_mut!((*state_ptr).trietrl_storage).write(trietrl_storage);
+            core::ptr::addr_of_mut!((*state_ptr).trietro_storage).write(trietro_storage);
+            core::ptr::addr_of_mut!((*state_ptr).src_spans).write(src_spans);
+            core::ptr::addr_of_mut!((*state_ptr).src_dedup).write(src_dedup);
+            core::ptr::addr_of_mut!((*state_ptr).node_src).write(node_src);
+            core::ptr::addr_of_mut!((*state_ptr).src_native_offsets).write(src_native_offsets);
+            core::ptr::addr_of_mut!((*state_ptr).src_stack_cells).write(src_stack_cells);
+            core::ptr::addr_of_mut!((*state_ptr).node_stack).write(node_stack);
+            let mut state = state.assume_init();
+            state.refresh_runtime_pointers();
+            state
+        }
+    }
+
+    fn refresh_runtime_pointers(&mut self) {
+        self.zmem = pointer_or_null(&mut self.mem).wrapping_offset(-(self.memmin as isize));
+        self.buffer = pointer_or_null(&mut self.buffer_storage);
+        self.nest = pointer_or_null(&mut self.nest_storage);
+        self.savestack = pointer_or_null(&mut self.savestack_storage);
+        self.inputstack = pointer_or_null(&mut self.inputstack_storage);
+        self.inputfile = pointer_or_null(&mut self.inputfile_storage);
+        self.eofseen = pointer_or_null(&mut self.eofseen_storage);
+        self.linestack = pointer_or_null(&mut self.linestack_storage);
+        self.grpstack = pointer_or_null(&mut self.grpstack_storage);
+        self.ifstack = pointer_or_null(&mut self.ifstack_storage);
+        self.sourcefilenamestack = pointer_or_null(&mut self.sourcefilenamestack_storage);
+        self.fullsourcefilenamestack =
+            pointer_or_null(&mut self.fullsourcefilenamestack_storage);
+        self.paramstack = pointer_or_null(&mut self.paramstack_storage);
+        self.hyphword = pointer_or_null(&mut self.hyphword_storage);
+        self.hyphlist = pointer_or_null(&mut self.hyphlist_storage);
+        self.hyphlink = pointer_or_null(&mut self.hyphlink_storage);
+        self.hash = PagedView::new(&mut self.hash_paged);
+        self.zeqtb = PagedView::new(&mut self.eqtb_paged);
+        self.strstart = pointer_or_null(&mut self.strstart_storage);
+        self.strpool = pointer_or_null(&mut self.strpool_storage);
+        self.fontinfo = pointer_or_null(&mut self.fontinfo_storage);
+        self.bcharlabel = pointer_or_null(&mut self.bcharlabel_storage);
+        self.charbase = pointer_or_null(&mut self.charbase_storage);
+        self.widthbase = pointer_or_null(&mut self.widthbase_storage);
+        self.heightbase = pointer_or_null(&mut self.heightbase_storage);
+        self.depthbase = pointer_or_null(&mut self.depthbase_storage);
+        self.italicbase = pointer_or_null(&mut self.italicbase_storage);
+        self.ligkernbase = pointer_or_null(&mut self.ligkernbase_storage);
+        self.kernbase = pointer_or_null(&mut self.kernbase_storage);
+        self.extenbase = pointer_or_null(&mut self.extenbase_storage);
+        self.parambase = pointer_or_null(&mut self.parambase_storage);
+        self.fontarea = pointer_or_null(&mut self.fontarea_storage);
+        self.fontname = pointer_or_null(&mut self.fontname_storage);
+        self.fontbc = pointer_or_null(&mut self.fontbc_storage);
+        self.fontec = pointer_or_null(&mut self.fontec_storage);
+        self.fontbchar = pointer_or_null(&mut self.fontbchar_storage);
+        self.fontfalsebchar = pointer_or_null(&mut self.fontfalsebchar_storage);
+        self.fontcheck = pointer_or_null(&mut self.fontcheck_storage);
+        self.fontdsize = pointer_or_null(&mut self.fontdsize_storage);
+        self.fontsize = pointer_or_null(&mut self.fontsize_storage);
+        self.fontflags = pointer_or_null(&mut self.fontflags_storage);
+        self.fontglue = pointer_or_null(&mut self.fontglue_storage);
+        self.fontlayoutengine = pointer_or_null(&mut self.fontlayoutengine_storage);
+        self.fontletterspace = pointer_or_null(&mut self.fontletterspace_storage);
+        self.fontmapping = pointer_or_null(&mut self.fontmapping_storage);
+        self.fontparams = pointer_or_null(&mut self.fontparams_storage);
+        self.fontused = pointer_or_null(&mut self.fontused_storage);
+        self.nativetext = pointer_or_null(&mut self.nativetext_storage);
+        self.hyphenchar = pointer_or_null(&mut self.hyphenchar_storage);
+        self.skewchar = pointer_or_null(&mut self.skewchar_storage);
+        self.triec = pointer_or_null(&mut self.triec_storage);
+        self.triehash = pointer_or_null(&mut self.triehash_storage);
+        self.triel = pointer_or_null(&mut self.triel_storage);
+        self.trieo = pointer_or_null(&mut self.trieo_storage);
+        self.trier = pointer_or_null(&mut self.trier_storage);
+        self.trietaken = pointer_or_null(&mut self.trietaken_storage);
+        self.trietrc = pointer_or_null(&mut self.trietrc_storage);
+        self.trietrl = pointer_or_null(&mut self.trietrl_storage);
+        self.trietro = pointer_or_null(&mut self.trietro_storage);
+    }
+
+    fn seal_as_format_snapshot(&mut self) {
+        self.curinput = instaterecord::default();
+        self.inputptr = 0;
+        self.inopen = 0;
+        self.baseptr = 0;
+        self.scannerstatus = 0;
+        self.warningindex = 0;
+        self.defref = -(268435455 as i64) as halfword;
+        self.paramptr = 0;
+        self.alignstate = 1000000 as integer;
+        self.first = 0;
+        self.last = 0;
+        self.line = 0;
+        self.openparens = 0;
+        self.inputstack_storage.fill(instaterecord::default());
+        self.inputfile_storage.fill(core::ptr::null_mut());
+        self.eofseen_storage.fill(false_0);
+        self.linestack_storage.fill(0);
+        self.grpstack_storage.fill(-(268435455 as i64) as halfword);
+        self.ifstack_storage.fill(-(268435455 as i64) as halfword);
+        self.sourcefilenamestack_storage.fill(0);
+        self.fullsourcefilenamestack_storage.fill(0);
+        self.paramstack_storage.fill(0);
+        // Drop every per-codepoint page that still holds only its band defaults,
+        // so the sealed image (and anything cloned/serialized from it) keeps only
+        // pages with real overrides — the bulk of the eqtb/hash savings.
+        self.eqtb_paged.compact();
+        self.hash_paged.compact();
+        // Free the hyphenation-trie *construction scratch* — but only once the
+        // trie has been packed (`trienotready == 0`). After packing, runtime
+        // hyphenation reads only the packed trie (`trietr{c,l,o}`); these six
+        // arrays are written solely by the trie builder, which never runs again.
+        // If the trie is still unpacked (no `finalize_trie`), keep them: the lazy
+        // runtime `inittrie` still needs them. Reclaims ~24 MB when packed.
+        if self.trienotready == false_0 {
+            self.triehash_storage = Vec::new();
+            self.triel_storage = Vec::new();
+            self.trier_storage = Vec::new();
+            self.trieo_storage = Vec::new();
+            self.triec_storage = Vec::new();
+            self.trietaken_storage = Vec::new();
+        }
+        self.refresh_runtime_pointers();
+    }
+
+    /// Serialize the engine state to a portable byte image (a dumped `.fmt`).
+    ///
+    /// The encoding mirrors [`Self::clone_boxed`]: a raw image of the whole
+    /// struct (every POD scalar/array is valid; `Vec` headers and raw pointers
+    /// are garbage that the loader overwrites/refreshes) followed by each
+    /// heap-owning `Vec`'s raw element bytes in [`portable_owning_vecs`] order.
+    ///
+    /// This is **same-layout only**: the image is stamped with the pointer width
+    /// and `size_of::<PortableTexState>()`, and [`Self::from_portable_bytes`]
+    /// refuses any image whose stamps don't match the loading target. In
+    /// practice the dump tool and the consumer must share a target triple
+    /// (e.g. both `wasm32-unknown-unknown`).
+    pub(crate) fn to_portable_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&PORTABLE_FORMAT_MAGIC);
+        out.push(core::mem::size_of::<usize>() as u8);
+        out.extend_from_slice(&(core::mem::size_of::<PortableTexState>() as u64).to_le_bytes());
+        // SAFETY: read-only view of `self`'s bytes; `PortableTexState` has no
+        // padding we care about (POD scalars round-trip; owning Vecs follow).
+        let image = unsafe {
+            core::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                core::mem::size_of::<Self>(),
+            )
+        };
+        out.extend_from_slice(image);
+        // `mem` is dumped as its two live regions (low/variable + high/single-word),
+        // skipping the free gap between `lomemmax` and `himemmin` — exactly what a
+        // `.fmt` dump preserves. Indices are relative to `memmin` (the Vec base).
+        let lo_len = (self.lomemmax - self.memmin + 1).max(0) as usize;
+        let hi_start = (self.himemmin - self.memmin).max(0) as usize;
+        let hi_len = (self.memend - self.himemmin + 1).max(0) as usize;
+        portable_write_vec_ranges::<memoryword>(
+            &mut out,
+            self.mem.as_slice(),
+            &[(0, lo_len), (hi_start, hi_len)],
+        );
+        // Every other owning array: drop the trailing zero region.
+        macro_rules! write_field {
+            ($name:ident, $ty:ty) => {{
+                let slice = self.$name.as_slice();
+                let used = portable_used_prefix_len(slice);
+                let ranges: &[(usize, usize)] = if used == 0 { &[] } else { &[(0, used)] };
+                portable_write_vec_ranges::<$ty>(&mut out, slice, ranges);
+            }};
+        }
+        portable_owning_vecs!(write_field);
+        // Paged eqtb/hash: geometry + dense low + only the faulted override pages.
+        portable_write_paged(&mut out, &self.eqtb_paged);
+        portable_write_paged(&mut out, &self.hash_paged);
+        out
+    }
+
+    /// Reconstruct an engine state from [`Self::to_portable_bytes`] output.
+    ///
+    /// Returns `None` if the magic/stamps don't match the loading target or the
+    /// buffer is truncated. The input-file pointer table is nulled (those are
+    /// process-local OS handles). `fontlayoutengine`/`fontmapping` hold *integer
+    /// font handles*, not addresses, so they are preserved verbatim and the
+    /// caller re-binds them to a fresh font platform via
+    /// [`FontPlatform::restore_font_table`] before rendering.
+    pub(crate) fn from_portable_bytes(bytes: &[u8]) -> Option<Box<Self>> {
+        let mut cursor = 0usize;
+        if bytes.get(cursor..cursor + PORTABLE_FORMAT_MAGIC.len())? != &PORTABLE_FORMAT_MAGIC[..] {
+            return None;
+        }
+        cursor += PORTABLE_FORMAT_MAGIC.len();
+        if *bytes.get(cursor)? as usize != core::mem::size_of::<usize>() {
+            return None;
+        }
+        cursor += 1;
+        let struct_size =
+            u64::from_le_bytes(bytes.get(cursor..cursor + 8)?.try_into().ok()?) as usize;
+        cursor += 8;
+        if struct_size != core::mem::size_of::<Self>() {
+            return None;
+        }
+        let image = bytes.get(cursor..cursor + core::mem::size_of::<Self>())?;
+        cursor += core::mem::size_of::<Self>();
+
+        let mut state = Box::<Self>::new_uninit();
+        let state_ptr = state.as_mut_ptr();
+        // SAFETY: mirrors `clone_boxed` — copy the POD struct image, then
+        // overwrite every heap-owning field with a freshly-decoded `Vec`
+        // (`ptr::write` does not drop the garbage header it overwrites), then
+        // refresh all derived raw pointers from the new Vec bases.
+        let state = unsafe {
+            core::ptr::copy_nonoverlapping(
+                image.as_ptr(),
+                state_ptr as *mut u8,
+                core::mem::size_of::<Self>(),
+            );
+            let decoded_mem: Vec<memoryword> = portable_read_vec_ranges(bytes, &mut cursor)?;
+            core::ptr::addr_of_mut!((*state_ptr).mem).write(decoded_mem);
+            macro_rules! read_field {
+                ($name:ident, $ty:ty) => {
+                    let decoded: Vec<$ty> = portable_read_vec_ranges(bytes, &mut cursor)?;
+                    core::ptr::addr_of_mut!((*state_ptr).$name).write(decoded);
+                };
+            }
+            portable_owning_vecs!(read_field);
+            let eqtb_paged =
+                portable_read_paged(bytes, &mut cursor, eqtb_codepoint_default, eqtb_sig_range)?;
+            core::ptr::addr_of_mut!((*state_ptr).eqtb_paged).write(eqtb_paged);
+            let hash_paged =
+                portable_read_paged(bytes, &mut cursor, hash_codepoint_default, hash_sig_range)?;
+            core::ptr::addr_of_mut!((*state_ptr).hash_paged).write(hash_paged);
+            // Source-tracking tables are transient per-render parse state, never
+            // serialized; overwrite the raw-image headers with fresh empties so
+            // the reloaded state owns valid (empty) tables. `source_tracking`
+            // itself round-trips as a POD scalar but is reset at each
+            // `begin_primary_input`, so its dumped value is irrelevant.
+            core::ptr::addr_of_mut!((*state_ptr).src_spans).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).src_dedup)
+                .write(std::collections::HashMap::new());
+            core::ptr::addr_of_mut!((*state_ptr).node_src)
+                .write(PagedArray::new(0, 0, node_src_default, node_src_sig));
+            core::ptr::addr_of_mut!((*state_ptr).src_native_offsets).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).src_stack_cells).write(Vec::new());
+            core::ptr::addr_of_mut!((*state_ptr).cur_stack_head).write(0);
+            core::ptr::addr_of_mut!((*state_ptr).node_stack)
+                .write(PagedArray::new(0, 0, node_stack_default, node_stack_sig));
+            // Input-file slots are process-local OS handles; null them. The font
+            // handle tables (`fontlayoutengine`/`fontmapping`) are integer
+            // handles, preserved for `restore_font_table` to rebind.
+            for slot in (*state_ptr).inputfile_storage.iter_mut() {
+                *slot = core::ptr::null_mut();
+            }
+            let mut state = state.assume_init();
+            state.refresh_runtime_pointers();
+            state
+        };
+        Some(state)
+    }
+
+    /// Total bytes backing the engine's dynamic arrays (the dominant runtime
+    /// footprint: `mem`, `eqtb`, `hash`, `fontinfo`, string pool, trie, …).
+    /// Counts allocated capacity, so it reflects real resident memory.
+    pub(crate) fn state_array_bytes(&self) -> usize {
+        let mut total = self.mem.capacity() * core::mem::size_of::<memoryword>();
+        macro_rules! accumulate {
+            ($name:ident, $ty:ty) => {
+                total += self.$name.capacity() * core::mem::size_of::<$ty>();
+            };
+        }
+        portable_owning_vecs!(accumulate);
+        total += self.eqtb_paged.resident_bytes() + self.hash_paged.resident_bytes();
+        total
+    }
+
+    fn allocate_initial_arrays(&mut self) {
+        self.iniversion = true_0;
+        self.membot = 0;
+        self.memmin = self.membot;
+        // Math-fragment workloads use a tiny fraction of TeX's worst-case main
+        // memory. Sized down from the 5M default; the latex+amsmath+unicode-math
+        // format build is the high-water mark and fits comfortably under 1M words.
+        // Raise if a large document hits `! TeX capacity exceeded (main memory)`.
+        self.memtop = 999_999;
+        self.memmax = self.memtop;
+        self.hashextra = 600_000;
+        self.eqtbtop = xetex_eqtb_top + self.hashextra;
+        self.bufsize = 200_000;
+        self.nestsize = 1_000;
+        self.maxinopen = 15;
+        self.paramsize = 20_000;
+        self.savesize = 200_000;
+        self.stacksize = 10_000;
+        self.dvibufsize = 16_384;
+        self.poolsize = 6_250_000;
+        self.maxstrings = 500_000;
+        self.fontmemsize = 1_000_000;
+        self.fontmax = 500;
+        // Hyphenation trie construction peak — the production `\patterns` the real
+        // `latex.ltx` loads need >700K nodes, so this stays at the worst case.
+        // The six *construction-scratch* trie arrays (everything except the packed
+        // trietr{c,l,o}) are freed in `seal_as_format_snapshot`, so this large
+        // size only costs memory transiently during the one-time format build.
+        self.triesize = 1_100_000;
+        self.hyphsize = 8_191;
+        self.primused = 2_100;
+        self.errorline = 79;
+        self.halferrorline = 50;
+        self.maxprintline = 79;
+        self.expanddepth = 10_000;
+
+        self.mem = zeroed_vec((self.memtop - self.memmin + 1) as usize);
+        // These arrays are `array[0..N]` / `array[1..N]` in web2c, allocated via
+        // `xmallocarray(T, N)` == `xmalloc((N+1)*sizeof(T))` (cpascal.h), i.e. N+1
+        // elements so the top index N is valid. The c2rust output allocates each
+        // as `(dim + 1)` accordingly. Allocating only `dim` here under-sizes every
+        // one by a slot: in the original C arena the top index harmlessly aliased
+        // adjacent memory, but this is a bounds-real Rust Vec, so e.g. show_context
+        // reading `linestack[index+1]` at the top input level was an OOB read.
+        self.buffer_storage = zeroed_vec((self.bufsize + 1) as usize);
+        self.nest_storage = zeroed_vec((self.nestsize + 1) as usize);
+        self.savestack_storage = zeroed_vec((self.savesize + 1) as usize);
+        self.inputstack_storage = zeroed_vec((self.stacksize + 1) as usize);
+        self.inputfile_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.eofseen_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.linestack_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.grpstack_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.ifstack_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.sourcefilenamestack_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.fullsourcefilenamestack_storage = zeroed_vec((self.maxinopen + 1) as usize);
+        self.paramstack_storage = zeroed_vec((self.paramsize + 1) as usize);
+        self.hyphword_storage = zeroed_vec((self.hyphsize + 1) as usize);
+        self.hyphlist_storage = zeroed_vec((self.hyphsize + 1) as usize);
+        self.hyphlink_storage = zeroed_vec((self.hyphsize + 1) as usize);
+        // eqtb/hash: dense low region [..CODEPOINT_LO), then the per-codepoint
+        // bands paged lazily. `hash` starts at absolute index `hashoffset`
+        // (its element 0); both run through absolute index `eqtbtop`.
+        self.eqtb_paged = PagedArray::new(
+            0,
+            (self.eqtbtop + 1) as usize,
+            eqtb_codepoint_default,
+            eqtb_sig_range,
+        );
+        self.hash_paged = PagedArray::new(
+            hashoffset as usize,
+            (self.eqtbtop + 1) as usize,
+            hash_codepoint_default,
+            hash_sig_range,
+        );
+        self.strstart_storage = zeroed_vec((self.maxstrings + 1) as usize);
+        self.strpool_storage = zeroed_vec((self.poolsize + 1) as usize);
+        self.fontinfo_storage = zeroed_vec((self.fontmemsize + 1) as usize);
+        let font_slots = (self.fontmax + 1) as usize;
+        self.bcharlabel_storage = zeroed_vec(font_slots);
+        self.charbase_storage = zeroed_vec(font_slots);
+        self.widthbase_storage = zeroed_vec(font_slots);
+        self.heightbase_storage = zeroed_vec(font_slots);
+        self.depthbase_storage = zeroed_vec(font_slots);
+        self.italicbase_storage = zeroed_vec(font_slots);
+        self.ligkernbase_storage = zeroed_vec(font_slots);
+        self.kernbase_storage = zeroed_vec(font_slots);
+        self.extenbase_storage = zeroed_vec(font_slots);
+        self.parambase_storage = zeroed_vec(font_slots);
+        self.fontarea_storage = zeroed_vec(font_slots);
+        self.fontname_storage = zeroed_vec(font_slots);
+        self.fontbc_storage = zeroed_vec(font_slots);
+        self.fontec_storage = zeroed_vec(font_slots);
+        self.fontbchar_storage = zeroed_vec(font_slots);
+        self.fontfalsebchar_storage = zeroed_vec(font_slots);
+        self.fontcheck_storage = zeroed_vec(font_slots);
+        self.fontdsize_storage = zeroed_vec(font_slots);
+        self.fontsize_storage = zeroed_vec(font_slots);
+        self.fontflags_storage = zeroed_vec(font_slots);
+        self.fontglue_storage = zeroed_vec(font_slots);
+        self.fontlayoutengine_storage = zeroed_vec(font_slots);
+        self.fontletterspace_storage = zeroed_vec(font_slots);
+        self.fontmapping_storage = zeroed_vec(font_slots);
+        self.fontparams_storage = zeroed_vec(font_slots);
+        self.fontused_storage = zeroed_vec(font_slots);
+        self.nativetext_storage = Vec::new();
+        self.hyphenchar_storage = zeroed_vec(font_slots);
+        self.skewchar_storage = zeroed_vec(font_slots);
+        let trie_slots = (self.triesize + 1) as usize;
+        self.triec_storage = zeroed_vec(trie_slots);
+        self.triehash_storage = zeroed_vec(trie_slots);
+        self.triel_storage = zeroed_vec(trie_slots);
+        self.trieo_storage = zeroed_vec(trie_slots);
+        self.trier_storage = zeroed_vec(trie_slots);
+        self.trietaken_storage = zeroed_vec(trie_slots);
+        self.trietrc_storage = zeroed_vec(trie_slots);
+        self.trietrl_storage = zeroed_vec(trie_slots);
+        self.trietro_storage = zeroed_vec(trie_slots);
+        self.refresh_runtime_pointers();
+    }
+}
+
+fn zeroed_vec<T>(len: usize) -> Vec<T>
+where
+    T: Clone + Default,
+{
+    vec![T::default(); len]
+}
+
+fn pointer_or_null<T>(storage: &mut Vec<T>) -> *mut T {
+    if storage.is_empty() {
+        core::ptr::null_mut()
+    } else {
+        storage.as_mut_ptr()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineProfileKind {
+    Tex,
+    Etex,
+    Xetex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineProfile {
+    pub id: &'static str,
+    pub kind: EngineProfileKind,
+    pub etex: bool,
+    pub xetex: bool,
+    pub unicode_scalars: bool,
+    pub unicode_math: bool,
+    pub native_fonts: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WriteTokenConstants {
+    open_group_token: halfword,
+    end_write_token: halfword,
+    close_group_token: halfword,
+}
+
+impl EngineProfile {
+    pub const fn tex() -> Self {
+        Self {
+            id: "tex",
+            kind: EngineProfileKind::Tex,
+            etex: false,
+            xetex: false,
+            unicode_scalars: false,
+            unicode_math: false,
+            native_fonts: false,
+        }
+    }
+
+    pub const fn etex() -> Self {
+        Self {
+            id: "etex",
+            kind: EngineProfileKind::Etex,
+            etex: true,
+            xetex: false,
+            unicode_scalars: false,
+            unicode_math: false,
+            native_fonts: false,
+        }
+    }
+
+    pub const fn xetex() -> Self {
+        Self {
+            id: "xetex",
+            kind: EngineProfileKind::Xetex,
+            etex: true,
+            xetex: true,
+            unicode_scalars: true,
+            unicode_math: true,
+            native_fonts: false,
+        }
+    }
+
+    const fn write_token_constants(self) -> WriteTokenConstants {
+        match self.kind {
+            EngineProfileKind::Tex | EngineProfileKind::Etex => WriteTokenConstants {
+                open_group_token: 637,
+                end_write_token: 19617,
+                close_group_token: 379,
+            },
+            EngineProfileKind::Xetex => WriteTokenConstants {
+                open_group_token: 4_194_429,
+                end_write_token: 34_749_089,
+                close_group_token: 2_097_275,
+            },
+        }
+    }
+}
+
+pub struct PortableFormatImage {
+    state: Box<PortableTexState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableNodeHandle(pub i32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortableNodeKind {
+    HorizontalBox,
+    VerticalBox,
+    Rule,
+    Insertion,
+    Mark,
+    Adjustment,
+    Ligature,
+    Discretionary,
+    OutputWhatsit,
+    Whatsit,
+    Math,
+    Glue,
+    Kern,
+    Penalty,
+    UnsetBox,
+    Noad,
+    Style,
+    Choice,
+    Character,
+    NativeWord,
+    NativeGlyph,
+    Unknown(i32),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortableNodeSnapshot {
+    pub handle: PortableNodeHandle,
+    pub kind: PortableNodeKind,
+    pub subtype: i32,
+    pub source: Option<PortableSourceSpan>,
+    pub link: Option<PortableNodeHandle>,
+    pub font: i32,
+    pub character: i32,
+    pub width: i32,
+    pub height: i32,
+    pub depth: i32,
+    pub shift: i32,
+    pub list: Option<PortableNodeHandle>,
+    pub native_glyphs: Vec<PortableNativeGlyph>,
+    /// Box glue-set ratio (from `hpack`/`vpack`); meaningful for hlist/vlist.
+    pub glue_set: f64,
+    /// Box glue sign: 0 normal, 1 stretching, 2 shrinking.
+    pub glue_sign: i32,
+    /// Box glue order (0..3) that participates in stretching/shrinking.
+    pub glue_order: i32,
+    /// Glue node's spec stretch amount (raw glue order in `glue_stretch_order`).
+    pub glue_stretch: i32,
+    /// Glue node's spec shrink amount.
+    pub glue_shrink: i32,
+    /// Order (0..3) of the glue node's stretch component.
+    pub glue_stretch_order: i32,
+    /// Order (0..3) of the glue node's shrink component.
+    pub glue_shrink_order: i32,
+}
+
+impl Clone for PortableFormatImage {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone_boxed(),
+        }
+    }
+}
+
+impl PortableFormatImage {
+    pub fn empty() -> Self {
+        Self {
+            state: PortableTexState::new_boxed_default(),
+        }
+    }
+
+    fn from_engine_state(state: &PortableTexState) -> Self {
+        let mut state = state.clone_boxed();
+        state.seal_as_format_snapshot();
+        Self {
+            state,
+        }
+    }
+
+    /// Wrap an already-sealed engine state, taking ownership without cloning.
+    /// Used by [`PortableTexEngine::into_format`].
+    fn from_sealed_state(state: Box<PortableTexState>) -> Self {
+        Self { state }
+    }
+
+    /// Serialize this format image to a portable byte buffer (a dumped `.fmt`)
+    /// that [`Self::from_bytes`] can reload. Same-target only — see
+    /// [`PortableTexState::to_portable_bytes`].
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.state.to_portable_bytes()
+    }
+
+    /// Reload a format image previously produced by [`Self::to_bytes`]. Returns
+    /// `None` if the buffer is not a format image for this build target.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        Some(Self {
+            state: PortableTexState::from_portable_bytes(bytes)?,
+        })
+    }
+
+    /// Resident bytes of the engine's dynamic arrays once instantiated from this
+    /// image — the dominant runtime memory footprint.
+    #[must_use]
+    pub fn state_array_bytes(&self) -> usize {
+        self.state.state_array_bytes()
+    }
+
+}
+
+/// Size in bytes of one TeX `memory_word` in this build. Real XeTeX packs it to
+/// 8; this engine uses a 16-byte word (the `four_quarters` view is `u16`, but
+/// `two_halves`/`cint` keep the c2rust 32-bit alignment).
+#[must_use]
+pub fn memory_word_bytes() -> usize {
+    core::mem::size_of::<memoryword>()
+}
+
+pub struct PortableTexEngine<'resources> {
+    pub(crate) state: Box<PortableTexState>,
+    pub(crate) profile: EngineProfile,
+    pub(crate) resources: Box<dyn ResourceProvider + 'resources>,
+    pub(crate) fonts: Box<dyn FontPlatform + 'resources>,
+    pub(crate) platform: Box<dyn PortablePlatform + 'resources>,
+    pub(crate) nameoffile_storage: Vec<UTF8code>,
+    native_glyph_infos: std::collections::BTreeMap<i32, PortableNativeGlyphInfo>,
+    character_protrusions: std::collections::BTreeMap<(integer, u32, integer), integer>,
+    pub(crate) resource_requests: usize,
+    pub(crate) resource_request_records: Vec<PortableResourceRequestRecord>,
+    pub(crate) virtual_files: std::collections::BTreeMap<String, Vec<u8>>,
+    pub(crate) transcript_bytes: Vec<u8>,
+    pub(crate) current_input_package_owner: Option<String>,
+    pub(crate) stripped_page_builds: usize,
+    pub(crate) stripped_shipouts: usize,
+    pub(crate) stripped_special_outputs: usize,
+    pub(crate) stripped_picture_loads: usize,
+    pub(crate) stripped_source_specials: usize,
+    pub(crate) stripped_write_whatsit_diagnostics: usize,
+    pub(crate) stripped_pdf_extensions: usize,
+    pub(crate) stripped_page_top_prunes: usize,
+    pub(crate) last_stripped_shipout_box: Option<PortableNodeHandle>,
+    pub(crate) fragment_capture_enabled: bool,
+    pub(crate) format_initialization: bool,
+    pub(crate) captured_fragment_root: Option<PortableNodeHandle>,
+    pub(crate) last_abort_status: Option<integer>,
+    /// Captured message from the most recent surfaced [`EngineError`] (mirrors
+    /// `last_abort_status` for the error channel). The driver boundary stores it
+    /// here so the host can read *what* went wrong after a failed run.
+    pub(crate) last_error_message: Option<String>,
+    /// When set, the engine enforces the "render one math expression" sandbox:
+    /// breakout (`$`), job-control (`\end`), and IO (`\input`, `\write`, ...)
+    /// tokens are rejected as [`EngineError`]s, and a work budget bounds runtime.
+    /// Off during format construction (which legitimately uses those); the host
+    /// sets it for fragment renders. See [`PortableTexEngine::sandbox_reject`].
+    pub(crate) sandbox: bool,
+    /// Sandbox bookkeeping: the live MATH nesting depth (`init_math` `+1`,
+    /// `after_math` `-1`). The wrapper `$` opens depth 1 and the user content stays at
+    /// depth >= 1; nested math inside a text block (`\hbox{$x$}`, `\text{$y$}`) opens
+    /// depth 2+. Depth only returns to 0 when the wrapper math is CLOSED -- so a `$` that
+    /// re-opens math at depth 0 (after `sandbox_math_opened`) is a breakout, while a `$`
+    /// at depth >= 1 is legitimate nested math.
+    pub(crate) sandbox_math_depth: i32,
+    /// Sandbox: set once the wrapper math has opened, so the first depth-0 `init_math`
+    /// (the wrapper) is allowed but any later depth-0 re-open (a user `$` breakout) is
+    /// rejected.
+    pub(crate) sandbox_math_opened: bool,
+    /// Sandbox work budget: main-control iterations consumed this run, to bound
+    /// runaway expansion / infinite loops (`\def\x{\x}\x`).
+    pub(crate) sandbox_ops: u64,
+}
+
+pub(crate) fn zround(value: real) -> integer {
+    value.round() as integer
+}
+
+impl<'resources> PortableTexEngine<'resources> {
+    pub fn from_format<R>(
+        profile: EngineProfile,
+        format: &PortableFormatImage,
+        resources: R,
+    ) -> Self
+    where
+        R: ResourceProvider + 'resources,
+    {
+        Self {
+            state: format.state.clone_boxed(),
+            profile,
+            resources: Box::new(resources),
+            fonts: Box::<EmptyFontPlatform>::default(),
+            platform: Box::<EmptyPlatform>::default(),
+            nameoffile_storage: Vec::new(),
+            native_glyph_infos: std::collections::BTreeMap::new(),
+            character_protrusions: std::collections::BTreeMap::new(),
+            resource_requests: 0,
+            resource_request_records: Vec::new(),
+            virtual_files: std::collections::BTreeMap::new(),
+            transcript_bytes: Vec::new(),
+            current_input_package_owner: None,
+            stripped_page_builds: 0,
+            stripped_shipouts: 0,
+            stripped_special_outputs: 0,
+            stripped_picture_loads: 0,
+            stripped_source_specials: 0,
+            stripped_write_whatsit_diagnostics: 0,
+            stripped_pdf_extensions: 0,
+            stripped_page_top_prunes: 0,
+            last_stripped_shipout_box: None,
+            fragment_capture_enabled: false,
+            format_initialization: false,
+            captured_fragment_root: None,
+            last_abort_status: None,
+            last_error_message: None,
+            sandbox: false,
+            sandbox_math_depth: 0,
+            sandbox_math_opened: false,
+            sandbox_ops: 0,
+        }
+    }
+
+    pub fn with_font_platform<F>(mut self, fonts: F) -> Self
+    where
+        F: FontPlatform + 'resources,
+    {
+        self.fonts = Box::new(fonts);
+        self
+    }
+
+    pub fn with_platform<P>(mut self, platform: P) -> Self
+    where
+        P: PortablePlatform + 'resources,
+    {
+        self.platform = Box::new(platform);
+        self
+    }
+
+    pub fn profile(&self) -> EngineProfile {
+        self.profile
+    }
+
+    pub fn initialize_format_state(self: &mut Self) -> bool {
+        self.catch_engine_abort(|engine| unsafe {
+            let this = engine as *mut PortableTexEngine<'_>;
+            engine.state.allocate_initial_arrays();
+            engine.initialize();
+            if engine.supports_etex() {
+                engine.state.eTeXmode = 1 as eightbits;
+            }
+            // `getstringsstarted`, `initprim`, and the two startup-primitive
+            // methods are abort-reachable (`EngineFlow<..>`), so thread `?`. The
+            // `abort_engine(this, 1)` path here is the "could not start strings"
+            // error abort (status 1).
+            if engine.getstringsstarted()? == 0 {
+                Self::abort_engine(this, 1 as integer)?;
+            }
+            engine.initprim()?;
+            engine.init_etex_startup_primitives()?;
+            engine.init_xetex_startup_primitives()?;
+            engine.state.initstrptr = engine.state.strptr;
+            engine.state.initpoolptr = engine.state.poolptr;
+            // Inter-element math spacing offset. The original computes this in
+            // `mainbody` (`magicoffset = strstart[math_spacing] - 9*ord_noad`),
+            // which the importer replaces with this init path, so the assignment
+            // was lost and `magicoffset` stayed 0 -- making the spacing lookup in
+            // mlist_to_hlist index arbitrary pool data and trip confusion("mlist4")
+            // on the first binary operator. The engine loads xetex.pool for every
+            // profile, so math_spacing is xetex string 784 (66320 - 65536) and
+            // ord_noad is 16.
+            engine.state.magicoffset =
+                (*engine.state.strstart.offset(784) as integer - 9 * 16) as integer;
+            engine.state.alignstate = 1000000 as integer;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn ensure_nativetext_capacity(
+        engine: &mut PortableTexEngine<'_>,
+        required: integer,
+    ) {
+        let required = required.max(0) as usize;
+        if engine.state.nativetext_storage.len() < required {
+            engine.state.nativetext_storage.resize(required, UTF16code::default());
+        }
+        engine.state.nativetext = pointer_or_null(&mut engine.state.nativetext_storage);
+    }
+
+    unsafe fn init_etex_startup_primitives(&mut self) -> EngineFlow<()> {
+        if !self.supports_etex() || self.is_xetex() {
+            return Ok(());
+        }
+        self.state.nonewcontrolsequence = false_0 as boolean;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1360 as i32, 70 as i32 as quarterword, 3 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1361 as i32, 70 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(765 as i32, 108 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1363 as i32, 72 as i32 as quarterword, 25067 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1364 as i32, 73 as i32 as quarterword, 27234 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1365 as i32, 73 as i32 as quarterword, 27235 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1366 as i32, 73 as i32 as quarterword, 27236 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1367 as i32, 73 as i32 as quarterword, 27237 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1368 as i32, 73 as i32 as quarterword, 27238 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1369 as i32, 73 as i32 as quarterword, 27239 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1370 as i32, 73 as i32 as quarterword, 27240 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1371 as i32, 73 as i32 as quarterword, 27241 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1372 as i32, 73 as i32 as quarterword, 27242 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1387 as i32, 70 as i32 as quarterword, 7 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1388 as i32, 70 as i32 as quarterword, 8 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1389 as i32, 70 as i32 as quarterword, 9 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1390 as i32, 70 as i32 as quarterword, 10 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1391 as i32, 70 as i32 as quarterword, 11 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1392 as i32, 70 as i32 as quarterword, 14 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1393 as i32, 70 as i32 as quarterword, 15 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1394 as i32, 70 as i32 as quarterword, 16 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1395 as i32, 70 as i32 as quarterword, 17 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1396 as i32, 70 as i32 as quarterword, 18 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1397 as i32, 70 as i32 as quarterword, 19 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1398 as i32, 70 as i32 as quarterword, 20 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1399 as i32, 19 as i32 as quarterword, 4 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1401 as i32, 19 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1402 as i32, 109 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1403 as i32, 109 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1404 as i32, 19 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1408 as i32, 82 as i32 as quarterword, 2 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(908 as i32, 49 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1412 as i32, 73 as i32 as quarterword, 27243 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1413 as i32, 33 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1414 as i32, 33 as i32 as quarterword, 7 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1415 as i32, 33 as i32 as quarterword, 10 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1416 as i32, 33 as i32 as quarterword, 11 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1425 as i32, 104 as i32 as quarterword, 2 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1427 as i32, 96 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(799 as i32, 102 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1428 as i32, 105 as i32 as quarterword, 17 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1429 as i32, 105 as i32 as quarterword, 18 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1430 as i32, 105 as i32 as quarterword, 19 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1217 as i32, 93 as i32 as quarterword, 8 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1436 as i32, 70 as i32 as quarterword, 25 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1437 as i32, 70 as i32 as quarterword, 26 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1438 as i32, 70 as i32 as quarterword, 27 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1439 as i32, 70 as i32 as quarterword, 28 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1443 as i32, 70 as i32 as quarterword, 12 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1444 as i32, 70 as i32 as quarterword, 13 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1445 as i32, 70 as i32 as quarterword, 21 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1446 as i32, 70 as i32 as quarterword, 22 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1447 as i32, 70 as i32 as quarterword, 23 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1448 as i32, 70 as i32 as quarterword, 24 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1449 as i32, 18 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1450 as i32, 110 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1451 as i32, 110 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1452 as i32, 110 as i32 as quarterword, 7 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1453 as i32, 110 as i32 as quarterword, 8 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1454 as i32, 110 as i32 as quarterword, 9 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1458 as i32, 24 as i32 as quarterword, 2 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1459 as i32, 24 as i32 as quarterword, 3 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1460 as i32, 84 as i32 as quarterword, 25324 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1461 as i32, 84 as i32 as quarterword, 25325 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1462 as i32, 84 as i32 as quarterword, 25326 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(1463 as i32, 84 as i32 as quarterword, 25327 as i32)?;
+        self.state.eTeXmode = 1 as eightbits;
+        Ok(())
+    }
+    unsafe fn init_xetex_startup_primitives(&mut self) -> EngineFlow<()> {
+        if !self.is_xetex() {
+            return Ok(());
+        }
+        self.state.nonewcontrolsequence = false_0 as boolean;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66755 as i64 as strnumber, 59 as i32 as quarterword, 41 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66756 as i64 as strnumber, 59 as i32 as quarterword, 42 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66757 as i64 as strnumber, 59 as i32 as quarterword, 43 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66758 as i64 as strnumber, 59 as i32 as quarterword, 46 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66759 as i64 as strnumber,
+                73 as i32 as quarterword,
+                1206306 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66760 as i64 as strnumber, 59 as i32 as quarterword, 23 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66816 as i64 as strnumber, 71 as i32 as quarterword, 3 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66817 as i64 as strnumber, 71 as i32 as quarterword, 19 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66115 as i64 as strnumber, 111 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66818 as i64 as strnumber, 71 as i32 as quarterword, 27 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66819 as i64 as strnumber,
+                111 as i32 as quarterword,
+                33 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66820 as i64 as strnumber, 71 as i32 as quarterword, 28 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66821 as i64 as strnumber, 71 as i32 as quarterword, 29 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66822 as i64 as strnumber, 71 as i32 as quarterword, 30 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66823 as i64 as strnumber, 71 as i32 as quarterword, 31 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66824 as i64 as strnumber, 71 as i32 as quarterword, 32 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66825 as i64 as strnumber, 71 as i32 as quarterword, 33 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66826 as i64 as strnumber, 71 as i32 as quarterword, 34 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66827 as i64 as strnumber, 71 as i32 as quarterword, 35 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66828 as i64 as strnumber, 71 as i32 as quarterword, 36 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66829 as i64 as strnumber, 71 as i32 as quarterword, 37 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66830 as i64 as strnumber, 71 as i32 as quarterword, 38 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66831 as i64 as strnumber, 71 as i32 as quarterword, 39 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66832 as i64 as strnumber, 71 as i32 as quarterword, 40 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66833 as i64 as strnumber, 71 as i32 as quarterword, 41 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66834 as i64 as strnumber, 71 as i32 as quarterword, 42 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66835 as i64 as strnumber,
+                111 as i32 as quarterword,
+                34 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66836 as i64 as strnumber,
+                111 as i32 as quarterword,
+                35 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66837 as i64 as strnumber,
+                111 as i32 as quarterword,
+                36 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66838 as i64 as strnumber, 71 as i32 as quarterword, 43 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66839 as i64 as strnumber, 71 as i32 as quarterword, 44 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66840 as i64 as strnumber, 71 as i32 as quarterword, 45 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66841 as i64 as strnumber, 71 as i32 as quarterword, 46 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66842 as i64 as strnumber, 71 as i32 as quarterword, 47 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66843 as i64 as strnumber, 71 as i32 as quarterword, 48 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66844 as i64 as strnumber, 71 as i32 as quarterword, 49 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66845 as i64 as strnumber, 71 as i32 as quarterword, 50 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66846 as i64 as strnumber, 71 as i32 as quarterword, 55 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66847 as i64 as strnumber,
+                111 as i32 as quarterword,
+                37 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66848 as i64 as strnumber, 71 as i32 as quarterword, 51 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66849 as i64 as strnumber, 71 as i32 as quarterword, 52 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66850 as i64 as strnumber, 71 as i32 as quarterword, 53 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66851 as i64 as strnumber, 71 as i32 as quarterword, 54 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66861 as i64 as strnumber,
+                73 as i32 as quarterword,
+                1206305 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66862 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892325 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66863 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892326 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66864 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892327 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66865 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892328 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66866 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892329 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66867 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892330 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66868 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892331 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66869 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892332 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66870 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892333 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66871 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892335 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66885 as i64 as strnumber, 71 as i32 as quarterword, 20 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66886 as i64 as strnumber, 71 as i32 as quarterword, 21 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66887 as i64 as strnumber, 71 as i32 as quarterword, 22 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66888 as i64 as strnumber, 71 as i32 as quarterword, 23 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66889 as i64 as strnumber, 71 as i32 as quarterword, 24 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66890 as i64 as strnumber, 71 as i32 as quarterword, 56 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66891 as i64 as strnumber, 71 as i32 as quarterword, 57 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66892 as i64 as strnumber, 71 as i32 as quarterword, 58 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66893 as i64 as strnumber, 71 as i32 as quarterword, 59 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66894 as i64 as strnumber, 71 as i32 as quarterword, 60 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66895 as i64 as strnumber, 71 as i32 as quarterword, 61 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66896 as i64 as strnumber, 71 as i32 as quarterword, 62 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66897 as i64 as strnumber, 19 as i32 as quarterword, 4 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66899 as i64 as strnumber, 19 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66900 as i64 as strnumber, 112 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66901 as i64 as strnumber, 112 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66902 as i64 as strnumber, 19 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66906 as i64 as strnumber, 83 as i32 as quarterword, 2 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66288 as i64 as strnumber, 49 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66910 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892334 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66911 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892339 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66912 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892341 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66913 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892342 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66914 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892343 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66915 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892340 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66916 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892344 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66917 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892347 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66918 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892348 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66919 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892349 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66920 as i64 as strnumber,
+                74 as i32 as quarterword,
+                7892350 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66761 as i64 as strnumber, 59 as i32 as quarterword, 44 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66762 as i64 as strnumber, 59 as i32 as quarterword, 45 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66921 as i64 as strnumber, 33 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66922 as i64 as strnumber, 33 as i32 as quarterword, 7 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66923 as i64 as strnumber, 33 as i32 as quarterword, 10 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66924 as i64 as strnumber, 33 as i32 as quarterword, 11 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66933 as i64 as strnumber, 107 as i32 as quarterword, 2 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66935 as i64 as strnumber, 98 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66164 as i64 as strnumber, 105 as i32 as quarterword, 1 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66936 as i64 as strnumber,
+                108 as i32 as quarterword,
+                17 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66937 as i64 as strnumber,
+                108 as i32 as quarterword,
+                18 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66938 as i64 as strnumber,
+                108 as i32 as quarterword,
+                19 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66939 as i64 as strnumber,
+                108 as i32 as quarterword,
+                20 as i32,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66623 as i64 as strnumber, 95 as i32 as quarterword, 8 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66945 as i64 as strnumber, 71 as i32 as quarterword, 67 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66946 as i64 as strnumber, 71 as i32 as quarterword, 68 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66947 as i64 as strnumber, 71 as i32 as quarterword, 69 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66948 as i64 as strnumber, 71 as i32 as quarterword, 70 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66952 as i64 as strnumber, 71 as i32 as quarterword, 25 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66953 as i64 as strnumber, 71 as i32 as quarterword, 26 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66954 as i64 as strnumber, 71 as i32 as quarterword, 63 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66955 as i64 as strnumber, 71 as i32 as quarterword, 64 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66956 as i64 as strnumber, 71 as i32 as quarterword, 65 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66957 as i64 as strnumber, 71 as i32 as quarterword, 66 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66958 as i64 as strnumber, 18 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66959 as i64 as strnumber, 113 as i32 as quarterword, 5 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66960 as i64 as strnumber, 113 as i32 as quarterword, 6 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66961 as i64 as strnumber, 113 as i32 as quarterword, 7 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66962 as i64 as strnumber, 113 as i32 as quarterword, 8 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66963 as i64 as strnumber, 113 as i32 as quarterword, 9 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66968 as i64 as strnumber, 24 as i32 as quarterword, 2 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(66969 as i64 as strnumber, 24 as i32 as quarterword, 3 as i32)?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66970 as i64 as strnumber,
+                85 as i32 as quarterword,
+                1206563 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66971 as i64 as strnumber,
+                85 as i32 as quarterword,
+                1206564 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66972 as i64 as strnumber,
+                85 as i32 as quarterword,
+                1206565 as i64 as halfword,
+            )?;
+        (&mut *(self as *mut PortableTexEngine<'_>))
+            .zprimitive(
+                66973 as i64 as strnumber,
+                85 as i32 as quarterword,
+                1206566 as i64 as halfword,
+            )?;
+        if *self.state.buffer.offset(self.state.curinput.locfield as isize) == 42 as i32
+        {
+            self.state.curinput.locfield += 1;
+        }
+        self.state.eTeXmode = 1 as eightbits;
+        self.state.maxregnum = 32767 as i32 as halfword;
+        self.state.maxreghelpline = 66965 as i64 as strnumber;
+        Ok(())
+    }
+
+    pub fn begin_primary_input(self: &mut Self, name: &str, bytes: Vec<u8>) -> bool {
+        // Catch point: `begin_primary_input_raw` now propagates aborts as
+        // `Err(EngineAbort)` (it threads `beginfilereading`/`firmuptheline`).
+        // The public API stays a plain `bool`, so consume the `Result` here: an
+        // abort during input setup means the input could not be started.
+        self.last_abort_status = None;
+        self.last_error_message = None;
+        match unsafe { self.begin_primary_input_raw(name, bytes) } {
+            Ok(started) => started != 0,
+            Err(EngineBreak::Abort(EngineAbort { status })) => {
+                self.last_abort_status = Some(status);
+                false
+            }
+            Err(EngineBreak::Error(error)) => {
+                self.last_error_message = Some(error.message);
+                false
+            }
+        }
+    }
+
+    pub fn run_main_control(self: &mut Self) -> bool {
+        self.catch_engine_abort(|engine| unsafe { engine.maincontrol() })
+    }
+
+    pub fn run_format_initialization(self: &mut Self) -> bool {
+        self.format_initialization = true;
+        let completed = self.catch_engine_abort(|engine| unsafe { engine.maincontrol() });
+        self.format_initialization = false;
+        completed
+    }
+
+    pub fn begin_fragment_capture(self: &mut Self) {
+        self.fragment_capture_enabled = true;
+        self.captured_fragment_root = None;
+    }
+
+    pub fn end_fragment_capture(self: &mut Self) {
+        self.fragment_capture_enabled = false;
+    }
+
+    fn catch_engine_abort<F>(self: &mut Self, run: F) -> bool
+    where
+        F: FnOnce(&mut Self) -> EngineFlow<()>,
+    {
+        // Non-unwinding abort boundary. The driver closure threads any fatal
+        // `jump_out`/`fatal_error`/`overflow` back as `Err(EngineAbort)` via the
+        // `?` operator instead of `panic_any`, so the engine runs under
+        // `panic=abort`. Status mapping is identical to the old `catch_unwind`
+        // path: status 0 (normal `\end`/dump) => "completed"; nonzero => abort.
+        self.last_abort_status = None;
+        self.last_error_message = None;
+        match run(self) {
+            Ok(()) => self.last_abort_status.is_none(),
+            Err(EngineBreak::Abort(EngineAbort { status: 0 })) => {
+                self.last_abort_status = None;
+                true
+            }
+            Err(EngineBreak::Abort(EngineAbort { status })) => {
+                self.last_abort_status = Some(status);
+                false
+            }
+            // A surfaced TeX error (or sandbox violation): record its message so
+            // the host can report it, and treat the run as not completed.
+            Err(EngineBreak::Error(error)) => {
+                self.last_error_message = Some(error.message);
+                false
+            }
+        }
+    }
+
+    pub fn snapshot_format(&self) -> PortableFormatImage {
+        PortableFormatImage::from_engine_state(self.state.as_ref())
+    }
+
+    /// Consume this engine and seal its state *in place* as a format snapshot,
+    /// moving the `Box<PortableTexState>` instead of deep-cloning it the way
+    /// [`Self::snapshot_format`] does. Building a format cache normally holds the
+    /// freshly-initialized engine (~hundreds of MB of `mem`/`eqtb`/`hash`) and a
+    /// full clone of it at the same time — a transient ~2x spike. When the caller
+    /// owns the engine and discards it right after snapshotting (the
+    /// `GeneratedFormatCache::initialized` / preload paths), moving the state
+    /// avoids the clone and halves that peak.
+    #[must_use]
+    pub fn into_format(self) -> PortableFormatImage {
+        // NOTE: do NOT `finalize_trie()` here. `into_format` is also used for the
+        // base format that further packages (`\patterns`) are loaded on top of;
+        // packing the trie is a one-way door ("! Too late for \patterns"). Callers
+        // that have produced the *final* format call `finalize_trie()` explicitly
+        // first (see `generated_format_for`, wasm `build_format`).
+        let mut state = self.state;
+        state.seal_as_format_snapshot();
+        PortableFormatImage::from_sealed_state(state)
+    }
+
+    /// Pack the hyphenation trie now, so its construction scratch can be freed
+    /// when the format is sealed. This engine packs the trie lazily on the first
+    /// runtime hyphenation (`inittrie` is a no-op while `format_initialization`);
+    /// doing it here — once the *final* format is built, exactly like TeX's
+    /// `\dump` — yields an identical packed trie and lets `seal_as_format_snapshot`
+    /// drop the ~24 MB of builder scratch arrays. Only call this when no further
+    /// `\patterns` will be loaded.
+    pub fn finalize_trie(self: &mut Self) {
+        // Only when the trie is unpacked AND its scratch is still present.
+        if self.state.trienotready != 0 && !self.state.triehash.is_null() {
+            let saved = self.format_initialization;
+            self.format_initialization = false;
+            let _ = unsafe { self.inittrie() };
+            self.format_initialization = saved;
+        }
+    }
+
+    pub fn resource_request_count(&self) -> usize {
+        self.resource_requests
+    }
+
+    pub fn resource_request_records(&self) -> &[PortableResourceRequestRecord] {
+        self.resource_request_records.as_slice()
+    }
+
+    pub fn transcript_bytes(&self) -> &[u8] {
+        self.transcript_bytes.as_slice()
+    }
+
+    /// The interned span keyed to the primary input's source name, if any —
+    /// the first recorded span whose name is the primary input file.
+    pub fn primary_input_source_span(&self) -> Option<PortableSourceSpan> {
+        if !self.state.source_tracking {
+            return None;
+        }
+        let primary = self.state.src_primary_name;
+        let raw = self
+            .state
+            .src_spans
+            .iter()
+            .find(|raw| raw.name == primary)?;
+        let name = unsafe { self.pool_string(raw.name) }?;
+        Some(PortableSourceSpan {
+            name,
+            start: raw.start,
+            end: raw.end,
+            role: raw.role,
+        })
+    }
+
+    /// Stamped node→span pairs. The `node_src` shadow is paged-sparse and not
+    /// cheaply enumerable by node address, so callers that need per-node spans
+    /// use [`Self::resolve_node_src`] / `snapshot_node` on the live node graph;
+    /// this restored accessor returns an empty slice rather than scanning `mem`.
+    pub fn node_source_spans(&self) -> &[PortableNodeSourceSpan] {
+        &[]
+    }
+
+    pub fn stripped_page_build_count(&self) -> usize {
+        self.stripped_page_builds
+    }
+
+    pub fn stripped_shipout_count(&self) -> usize {
+        self.stripped_shipouts
+    }
+
+    pub fn stripped_special_output_count(&self) -> usize {
+        self.stripped_special_outputs
+    }
+
+    pub fn stripped_picture_load_count(&self) -> usize {
+        self.stripped_picture_loads
+    }
+
+    pub fn stripped_source_special_count(&self) -> usize {
+        self.stripped_source_specials
+    }
+
+    pub fn stripped_write_whatsit_diagnostic_count(&self) -> usize {
+        self.stripped_write_whatsit_diagnostics
+    }
+
+    pub fn stripped_pdf_extension_count(&self) -> usize {
+        self.stripped_pdf_extensions
+    }
+
+    pub fn stripped_page_top_prune_count(&self) -> usize {
+        self.stripped_page_top_prunes
+    }
+
+    pub fn last_stripped_shipout_box(&self) -> Option<PortableNodeHandle> {
+        self.last_stripped_shipout_box
+    }
+
+    pub fn captured_fragment_root(&self) -> Option<PortableNodeHandle> {
+        self.captured_fragment_root
+    }
+
+    /// At-size (scaled points) a font was loaded at, by internal font number.
+    /// Used by the IR builder to carry the real glyph-run font size.
+    pub fn font_at_size(&self, font: integer) -> integer {
+        if font < 0 {
+            return 0;
+        }
+        self.state
+            .fontsize_storage
+            .get(font as usize)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The interned `\font` name for a font number. For native fonts this is the
+    /// XeTeX spec the font was loaded with (e.g.
+    /// `[latinmodern-math.otf]:script=math;ssty=1`); for TFM fonts it is the
+    /// `.tfm` name. Lets the IR carry a real font identity so a renderer can
+    /// resolve per-run glyph outlines to the originating font file.
+    pub fn font_name(&self, font: integer) -> Option<String> {
+        if font < 0 {
+            return None;
+        }
+        let name = self.state.fontname_storage.get(font as usize).copied()?;
+        // SAFETY: decodes the engine string pool, identical to every other
+        // `pool_string` read elsewhere in the boundary layer.
+        unsafe { self.pool_string(name) }
+    }
+
+    /// The `\font` spec a native font number was loaded with, recovered from the
+    /// font platform (`[file]:features`). For native fonts this is the reliable
+    /// identity (TFM `\fontname` is empty for them). Read-only.
+    pub fn native_font_spec(&self, font: integer) -> Option<String> {
+        let handle = Self::font_handle_for_number(self, font)?;
+        self.fonts.font_spec(handle)
+    }
+
+    /// Snapshot the native-font table `(handle, spec, size)` from the attached
+    /// font platform, for packaging alongside a serialized format image.
+    pub fn native_font_table(&self) -> Vec<(PortableFontHandle, String, i32)> {
+        self.fonts.font_table()
+    }
+
+    /// Re-bind native fonts on a cold-loaded format image: rebuilds the attached
+    /// platform's handle→font map from a [`Self::native_font_table`] snapshot so
+    /// the `fontlayoutengine` handles preserved in the image resolve again.
+    /// Returns `false` if any font failed to reload.
+    pub fn restore_native_font_table(
+        self: &mut Self,
+        table: &[(PortableFontHandle, String, i32)],
+    ) -> bool {
+        self.fonts.restore_font_table(table)
+    }
+
+    pub fn last_abort_status(&self) -> Option<integer> {
+        self.last_abort_status
+    }
+
+    /// The message from the most recent surfaced [`EngineError`], if the last
+    /// run failed with a TeX error (rather than a fatal abort). `None` after a
+    /// clean run or a bare abort.
+    pub fn last_error_message(&self) -> Option<&str> {
+        self.last_error_message.as_deref()
+    }
+
+    /// Enable/disable the fragment sandbox (see [`PortableTexEngine::sandbox`]),
+    /// resetting the per-run bookkeeping so each render starts clean. Uses the
+    /// `self: &mut Self` receiver form the patcher's passes expect for prelude
+    /// methods (the `&mut self` shorthand gets its receiver stripped).
+    pub fn set_sandbox(self: &mut Self, on: bool) {
+        self.sandbox = on;
+        self.sandbox_math_depth = 0;
+        self.sandbox_math_opened = false;
+        self.sandbox_ops = 0;
+    }
+
+    /// Extract the message from the most recent `! ...` line in the transcript --
+    /// what `error()` printed for the diagnostic now being surfaced -- trimming
+    /// the trailing period `error()` appends. Diagnostics are printed with
+    /// `selector = term_and_log`, so each byte reaches the transcript twice (the
+    /// headless terminal and the log both feed it); [`collapse_doubled_line`]
+    /// undoes that. Returns a generic label if no well-formed error line exists.
+    pub(crate) fn capture_last_error_message(&self) -> String {
+        let transcript = core::str::from_utf8(&self.transcript_bytes).unwrap_or("");
+        for raw in transcript.lines().rev() {
+            let collapsed = collapse_doubled_line(raw.trim());
+            let line = collapsed.as_deref().unwrap_or(raw).trim();
+            if let Some(rest) = line.strip_prefix("! ") {
+                return rest.trim_end_matches('.').trim().into();
+            }
+        }
+        "TeX error".into()
+    }
+
+    pub fn snapshot_node(&self, handle: PortableNodeHandle) -> Option<PortableNodeSnapshot> {
+        let node = handle.0 as halfword;
+        let word = self.node_word(node, 0)?;
+        let raw_kind = unsafe { word.hh.u.B0 as i32 };
+        let subtype = unsafe { word.hh.u.B1 as i32 };
+        let kind = self.node_kind(raw_kind, node, subtype);
+        let link = self.node_link(node);
+        let is_character = node >= self.state.himemmin;
+        let native_word4 = if matches!(kind, PortableNodeKind::NativeWord | PortableNodeKind::NativeGlyph) {
+            self.node_word(node, 4)
+        } else {
+            None
+        };
+        let font = if is_character {
+            raw_kind
+        } else {
+            native_word4.map_or(0, |word| unsafe { word.v.QQQQ.u.B1 as i32 })
+        };
+        let character = if is_character {
+            subtype
+        } else {
+            native_word4.map_or(0, |word| unsafe { word.v.QQQQ.u.B2 as i32 })
+        };
+        let (width, height, depth, shift, list) = match raw_kind {
+            _ if is_character => (
+                self.character_width(font, character).unwrap_or_default(),
+                0,
+                0,
+                0,
+                None,
+            ),
+            0 | 1 | 13 => (
+                self.node_scaled(node, 1).unwrap_or_default(),
+                self.node_scaled(node, 3).unwrap_or_default(),
+                self.node_scaled(node, 2).unwrap_or_default(),
+                self.node_scaled(node, 4).unwrap_or_default(),
+                self.node_field_link(node, 5),
+            ),
+            2 => (
+                self.node_scaled(node, 1).unwrap_or_default(),
+                self.node_scaled(node, 3).unwrap_or_default(),
+                self.node_scaled(node, 2).unwrap_or_default(),
+                0,
+                None,
+            ),
+            10 => (
+                self.glue_amount(node).unwrap_or_default(),
+                0,
+                0,
+                0,
+                None,
+            ),
+            11 => (
+                self.node_scaled(node, 1).unwrap_or_default(),
+                0,
+                0,
+                0,
+                None,
+            ),
+            8 if matches!(kind, PortableNodeKind::NativeWord | PortableNodeKind::NativeGlyph) => (
+                self.node_scaled(node, 1).unwrap_or_default(),
+                self.node_scaled(node, 3).unwrap_or_default(),
+                self.node_scaled(node, 2).unwrap_or_default(),
+                0,
+                None,
+            ),
+            _ => (0, 0, 0, 0, None),
+        };
+        let native_glyphs = if matches!(kind, PortableNodeKind::NativeWord | PortableNodeKind::NativeGlyph) {
+            self.native_glyph_infos
+                .get(&node)
+                .map(|info| info.glyphs.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Box glue-set state (`hlist_out`/`vlist_out` read these to turn each
+        // glue node's natural width into its SET width): `glue_set` is the float
+        // ratio from `hpack`/`vpack`, `glue_sign` (0 normal / 1 stretching /
+        // 2 shrinking) and `glue_order` (0..3) select which order participates.
+        let (glue_set, glue_sign, glue_order) = match raw_kind {
+            0 | 1 | 13 => (
+                self.node_word(node, 6).map_or(0.0, |word| unsafe { word.gr }),
+                self.node_word(node, 5)
+                    .map_or(0, |word| unsafe { word.hh.u.B0 as i32 }),
+                self.node_word(node, 5)
+                    .map_or(0, |word| unsafe { word.hh.u.B1 as i32 }),
+            ),
+            _ => (0.0, 0, 0),
+        };
+        // Glue node's spec stretch/shrink and their orders (raw_kind 10).
+        let (glue_stretch, glue_shrink, glue_stretch_order, glue_shrink_order) = if raw_kind == 10 {
+            match self.node_word(node, 1).map(|word| unsafe { word.hh.v.LH }) {
+                Some(spec) => (
+                    self.node_scaled(spec, 2).unwrap_or_default(),
+                    self.node_scaled(spec, 3).unwrap_or_default(),
+                    self.node_word(spec, 0)
+                        .map_or(0, |word| unsafe { word.hh.u.B0 as i32 }),
+                    self.node_word(spec, 0)
+                        .map_or(0, |word| unsafe { word.hh.u.B1 as i32 }),
+                ),
+                None => (0, 0, 0, 0),
+            }
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        Some(PortableNodeSnapshot {
+            handle,
+            kind,
+            subtype,
+            source: self.resolve_node_src(node),
+            link,
+            font,
+            character,
+            width,
+            height,
+            depth,
+            shift,
+            list,
+            native_glyphs,
+            glue_set,
+            glue_sign,
+            glue_order,
+            glue_stretch,
+            glue_shrink,
+            glue_stretch_order,
+            glue_shrink_order,
+        })
+    }
+
+    fn node_kind(&self, raw_kind: i32, node: halfword, subtype: i32) -> PortableNodeKind {
+        if node >= self.state.himemmin {
+            return PortableNodeKind::Character;
+        }
+
+        match raw_kind {
+            0 => PortableNodeKind::HorizontalBox,
+            1 => PortableNodeKind::VerticalBox,
+            2 => PortableNodeKind::Rule,
+            3 => PortableNodeKind::Insertion,
+            4 => PortableNodeKind::Mark,
+            5 => PortableNodeKind::Adjustment,
+            6 => PortableNodeKind::Ligature,
+            7 => PortableNodeKind::Discretionary,
+            8 if matches!(subtype, 40 | 41) => PortableNodeKind::NativeWord,
+            8 if subtype == 42 => PortableNodeKind::NativeGlyph,
+            8 if matches!(subtype, 0 | 1 | 2 | 3) => PortableNodeKind::OutputWhatsit,
+            8 => PortableNodeKind::Whatsit,
+            9 => PortableNodeKind::Math,
+            10 => PortableNodeKind::Glue,
+            11 => PortableNodeKind::Kern,
+            12 => PortableNodeKind::Penalty,
+            13 => PortableNodeKind::UnsetBox,
+            16 => PortableNodeKind::Noad,
+            14 => PortableNodeKind::Style,
+            15 => PortableNodeKind::Choice,
+            other => PortableNodeKind::Unknown(other),
+        }
+    }
+
+    pub(crate) fn copy_native_glyph_info(
+        this: &mut Self,
+        src: halfword,
+        dest: halfword,
+    ) -> quarterword {
+        if let Some(info) = this.native_glyph_infos.get(&src).cloned() {
+            let glyph_count = info.glyphs.len().min(i32::MAX as usize) as quarterword;
+            this.native_glyph_infos.insert(dest, info);
+            glyph_count
+        } else {
+            this.native_glyph_infos.remove(&dest);
+            0
+        }
+    }
+
+    fn font_handle_for_number(this: &Self, font: integer) -> Option<FontHandle> {
+        if font < 0 || this.state.fontlayoutengine.is_null() {
+            return None;
+        }
+        let handle = unsafe { *this.state.fontlayoutengine.offset(font as isize) as FontHandle };
+        (handle != 0).then_some(handle)
+    }
+
+    unsafe fn node_index_for_pointer(
+        engine: &PortableTexEngine<'_>,
+        node: voidpointer,
+    ) -> Option<halfword> {
+        if node.is_null() || engine.state.zmem.is_null() {
+            return None;
+        }
+        let base = engine.state.zmem as isize;
+        let address = node as isize;
+        let word_size = core::mem::size_of::<memoryword>() as isize;
+        if word_size == 0 || address < base {
+            return None;
+        }
+        let bytes = address - base;
+        if bytes % word_size != 0 {
+            return None;
+        }
+        let index = (bytes / word_size) as halfword;
+        if index < engine.state.memmin || index > engine.state.memmax {
+            None
+        } else {
+            Some(index)
+        }
+    }
+
+    unsafe fn native_node_font(mem: *mut memoryword, node: halfword) -> integer {
+        (*mem.offset((node + 4) as isize)).v.QQQQ.u.B1 as integer
+    }
+
+    unsafe fn native_node_text<'a>(mem: *mut memoryword, node: halfword) -> &'a [u16] {
+        let len = (*mem.offset((node + 4) as isize)).v.QQQQ.u.B2.max(0) as usize;
+        if len == 0 {
+            return &[];
+        }
+        core::slice::from_raw_parts(
+            mem.offset((node + native_node_size) as isize) as *const memoryword as *const u16,
+            len,
+        )
+    }
+
+    unsafe fn write_native_node_metrics(
+        mem: *mut memoryword,
+        node: halfword,
+        width: i32,
+        height: i32,
+        depth: i32,
+    ) {
+        (*mem.offset((node + 1) as isize)).u.CINT = width;
+        (*mem.offset((node + 2) as isize)).u.CINT = depth;
+        (*mem.offset((node + 3) as isize)).u.CINT = height;
+    }
+
+    fn node_word(&self, node: halfword, offset: halfword) -> Option<memoryword> {
+        let index = node.checked_add(offset)?;
+        if node as i64 == -(268435455 as i64) {
+            return None;
+        }
+        if self.state.zmem.is_null() || index < self.state.memmin || index > self.state.memmax {
+            return None;
+        }
+        unsafe { Some(*self.state.zmem.offset(index as isize)) }
+    }
+
+    fn node_link(&self, node: halfword) -> Option<PortableNodeHandle> {
+        let word = self.node_word(node, 0)?;
+        let link = unsafe { word.hh.v.RH };
+        Self::node_handle_from_raw(link)
+    }
+
+    fn node_field_link(&self, node: halfword, offset: halfword) -> Option<PortableNodeHandle> {
+        let word = self.node_word(node, offset)?;
+        let link = unsafe { word.hh.v.RH };
+        Self::node_handle_from_raw(link)
+    }
+
+    fn node_scaled(&self, node: halfword, offset: halfword) -> Option<i32> {
+        let word = self.node_word(node, offset)?;
+        Some(unsafe { word.u.CINT })
+    }
+
+    fn glue_amount(&self, node: halfword) -> Option<i32> {
+        let word = self.node_word(node, 1)?;
+        let glue_spec = unsafe { word.hh.v.LH };
+        self.node_scaled(glue_spec, 1)
+    }
+
+    fn character_width(&self, font: i32, character: i32) -> Option<i32> {
+        if font < 0
+            || character < 0
+            || self.state.fontinfo.is_null()
+            || self.state.charbase.is_null()
+            || self.state.widthbase.is_null()
+        {
+            return None;
+        }
+        let char_info_index = unsafe {
+            *self.state.charbase.offset(font as isize) + character
+        };
+        let char_info = unsafe {
+            (*self.state.fontinfo.offset(char_info_index as isize)).v.QQQQ
+        };
+        let width_index = unsafe {
+            *self.state.widthbase.offset(font as isize) as i32 + char_info.u.B0 as i32
+        };
+        Some(unsafe { (*self.state.fontinfo.offset(width_index as isize)).u.CINT })
+    }
+
+    fn node_handle_from_raw(raw: halfword) -> Option<PortableNodeHandle> {
+        if raw as i64 == -(268435455 as i64) {
+            None
+        } else {
+            Some(PortableNodeHandle(raw))
+        }
+    }
+
+
+    pub(crate) fn is_xetex(&self) -> bool {
+        self.profile.xetex
+    }
+
+    pub(crate) fn supports_etex(&self) -> bool {
+        self.profile.etex
+    }
+
+    pub(crate) fn supports_unicode_scalars(&self) -> bool {
+        self.profile.unicode_scalars
+    }
+
+    pub(crate) fn supports_unicode_math(&self) -> bool {
+        self.profile.unicode_math
+    }
+
+    pub(crate) fn supports_native_fonts(&self) -> bool {
+        self.profile.native_fonts
+    }
+
+    pub(crate) unsafe fn getinputnormalizationstate(&self) -> integer {
+        if !self.is_xetex() {
+            return 0;
+        }
+        let eqtb = self.state.zeqtb.as_mut_ptr();
+        if eqtb.is_null() {
+            return 0;
+        }
+        (*eqtb.offset(7892344 as i64 as isize)).u.CINT
+    }
+
+    pub(crate) unsafe fn gettracingfontsstate(&self) -> integer {
+        if !self.is_xetex() {
+            return 0;
+        }
+        let eqtb = self.state.zeqtb.as_mut_ptr();
+        if eqtb.is_null() {
+            return 0;
+        }
+        (*eqtb.offset(7892347 as i64 as isize)).u.CINT
+    }
+
+    unsafe fn current_resource_name(engine: *mut PortableTexEngine<'_>) -> Option<String> {
+        let engine = engine.as_ref()?;
+        if engine.state.nameoffile.is_null() || engine.state.namelength <= 0 {
+            return None;
+        }
+
+        let mut bytes = Vec::with_capacity(engine.state.namelength as usize);
+        for index in 1..=engine.state.namelength {
+            let value = *engine.state.nameoffile.offset(index as isize);
+            if value <= 0 {
+                continue;
+            }
+            bytes.push(value as u8);
+        }
+        Some(String::from_utf8_lossy(bytes.as_slice()).into_owned())
+    }
+
+    /// Resolve the `\XeTeXinputencoding "<name>"` encoding just scanned into
+    /// `nameoffile`, returning the XeTeX mode (AUTO=0, UTF8=1, UTF16BE=2,
+    /// UTF16LE=3, RAW=4) and zeroing `*info`. Faithful port of XeTeX's
+    /// `getencodingmodeandinfo` (`XeTeX_ext.c`), minus ICU: unknown names degrade
+    /// to RAW (read as raw bytes) rather than opening an ICU converter.
+    pub(crate) unsafe fn get_encoding_mode_and_info(
+        engine: *mut PortableTexEngine<'_>,
+        info: *mut integer,
+    ) -> integer {
+        if !info.is_null() {
+            *info = 0;
+        }
+        let name = Self::current_resource_name(engine).unwrap_or_default();
+        let lowered = name.trim().to_ascii_lowercase();
+        match lowered.as_str() {
+            "auto" => 0,                       // AUTO
+            "utf8" | "utf-8" => 1,             // UTF8
+            // `utf16` is host-endian; treat as big-endian (xetex default name).
+            "utf16" | "utf-16" | "utf16be" | "utf-16be" => 2, // UTF16BE
+            "utf16le" | "utf-16le" => 3,       // UTF16LE
+            "bytes" => 4,                      // RAW
+            // Unknown / ICU encoding names: read as raw bytes (no ICU support).
+            _ => 4,
+        }
+    }
+
+    unsafe fn mode_string(mode: const_string) -> String {
+        if mode.is_null() {
+            return String::new();
+        }
+
+        let mut bytes = Vec::new();
+        let mut cursor = mode;
+        while *cursor != 0 {
+            bytes.push(*cursor as u8);
+            cursor = cursor.add(1);
+        }
+        String::from_utf8_lossy(bytes.as_slice()).into_owned()
+    }
+
+    unsafe fn pool_string(&self, string: strnumber) -> Option<String> {
+        if string < 0 || self.state.strstart.is_null() || self.state.strpool.is_null() {
+            return None;
+        }
+        let index = Self::pool_string_index(string)?;
+        let start = *self.state.strstart.offset(index);
+        let end = *self.state.strstart.offset(index + 1);
+        if start < 0 || end < start {
+            return None;
+        }
+
+        let len = usize::try_from(end - start).ok()?;
+        let mut units = Vec::with_capacity(len);
+        for offset in 0..len {
+            units.push(*self.state.strpool.offset((start as usize + offset) as isize));
+        }
+        Some(
+            char::decode_utf16(units)
+                .map(|codepoint| codepoint.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn pool_string_index(string: strnumber) -> Option<isize> {
+        if string < 0 {
+            return None;
+        }
+        let index = if string >= 65536 { string - 65536 } else { string };
+        isize::try_from(index).ok()
+    }
+
+    fn resource_kind(name: &str, format: integer) -> ResourceKind {
+        match format {
+            resource_format_tex_input | 0 => Self::tex_resource_kind(name),
+            resource_format_tfm | resource_format_font => ResourceKind::Font,
+            resource_format_encoding => ResourceKind::Encoding,
+            resource_format_font_map => ResourceKind::Map,
+            resource_format_config => ResourceKind::Config,
+            resource_format_format_image => ResourceKind::FormatImage,
+            other => ResourceKind::Other(other),
+        }
+    }
+
+    fn tex_resource_kind(name: &str) -> ResourceKind {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        let name = name.to_ascii_lowercase();
+        if name.ends_with(".sty") {
+            return ResourceKind::Package;
+        }
+        if name.ends_with(".cls") {
+            return ResourceKind::Class;
+        }
+        if name.ends_with(".fd") {
+            return ResourceKind::FontDefinition;
+        }
+        if name.ends_with(".clo")
+            || name.ends_with(".def")
+            || name.ends_with(".ldf")
+            || name.ends_with(".cfg")
+        {
+            return ResourceKind::PackageSupport;
+        }
+        ResourceKind::TexInput
+    }
+
+    fn resource_kind_for_open(
+        engine: &PortableTexEngine<'_>,
+        name: &str,
+        format: integer,
+    ) -> ResourceKind {
+        let kind = Self::resource_kind(name, format);
+        if kind == ResourceKind::TexInput
+            && Self::active_package_owner(engine).is_some()
+            && Self::looks_like_package_asset(name)
+        {
+            ResourceKind::Asset
+        } else {
+            kind
+        }
+    }
+
+    fn resource_package_owner(
+        engine: &PortableTexEngine<'_>,
+        name: &str,
+        kind: ResourceKind,
+    ) -> Option<String> {
+        match kind {
+            ResourceKind::Package | ResourceKind::Class => Self::resource_stem(name),
+            ResourceKind::PackageSupport | ResourceKind::FontDefinition | ResourceKind::Asset => {
+                Self::active_package_owner(engine)
+            }
+            _ => None,
+        }
+    }
+
+    fn active_package_owner(engine: &PortableTexEngine<'_>) -> Option<String> {
+        engine.current_input_package_owner.clone()
+    }
+
+    fn looks_like_package_asset(name: &str) -> bool {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        let name = name.to_ascii_lowercase();
+        !(name.ends_with(".tex")
+            || name.ends_with(".ltx")
+            || name.ends_with(".sty")
+            || name.ends_with(".cls")
+            || name.ends_with(".fd")
+            || name.ends_with(".clo")
+            || name.ends_with(".def")
+            || name.ends_with(".ldf")
+            || name.ends_with(".cfg"))
+    }
+
+    fn resource_stem(name: &str) -> Option<String> {
+        let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        if stem.is_empty() {
+            None
+        } else {
+            Some(stem.to_string())
+        }
+    }
+
+    fn source_index(value: usize) -> u32 {
+        value.min(u32::MAX as usize) as u32
+    }
+
+    fn virtual_file_key(name: &str) -> String {
+        let mut name = name;
+        while let Some(stripped) = name.strip_prefix("./") {
+            name = stripped;
+        }
+        name.to_string()
+    }
+
+    fn normalized_runtime_resource_name(mut name: &str) -> &str {
+        while let Some(stripped) = name.strip_prefix("./") {
+            name = stripped;
+        }
+        name
+    }
+
+    // Hand-edited bridge: returns `EngineFlow<Option<strnumber>>` so the final
+    // `makestring` (abort-reachable on pool overflow) propagates via `?`, while
+    // the internal `Option` early-returns (a `None` means "did not intern", not
+    // an abort) stay explicit `Ok(None)`. The `?`-on-`Option` shorthand used
+    // before would not survive the return-type change, so this one is NOT
+    // auto-rewritten by the flow pass.
+    unsafe fn intern_static_pool_string(
+        engine: &mut PortableTexEngine<'_>,
+        text: &str,
+    ) -> EngineFlow<Option<strnumber>> {
+        if engine.state.strpool.is_null() || engine.state.strstart.is_null() {
+            return Ok(None);
+        }
+
+        let Ok(needed) = integer::try_from(text.encode_utf16().count()) else {
+            return Ok(None);
+        };
+        let Some(next_pool) = engine.state.poolptr.checked_add(needed) else {
+            return Ok(None);
+        };
+        if next_pool > engine.state.poolsize {
+            return Ok(None);
+        }
+
+        for unit in text.encode_utf16() {
+            *engine.state.strpool.offset(engine.state.poolptr as isize) = unit as packedUTF16code;
+            engine.state.poolptr += 1;
+        }
+
+        Ok(Some(engine.makestring()?))
+    }
+
+    unsafe fn append_text_to_pool(engine: &mut PortableTexEngine<'_>, text: &str) -> boolean {
+        if engine.state.strpool.is_null() {
+            return false_0;
+        }
+        let needed = match integer::try_from(text.encode_utf16().count()) {
+            Ok(needed) => needed,
+            Err(_) => return false_0,
+        };
+        let Some(next_pool) = engine.state.poolptr.checked_add(needed) else {
+            return false_0;
+        };
+        if next_pool > engine.state.poolsize {
+            return false_0;
+        }
+        for unit in text.encode_utf16() {
+            *engine.state.strpool.offset(engine.state.poolptr as isize) = unit as packedUTF16code;
+            engine.state.poolptr += 1;
+        }
+        true_0
+    }
+
+    unsafe fn resource_bytes_for_name(
+        engine: &mut PortableTexEngine<'_>,
+        name: &str,
+    ) -> Option<Vec<u8>> {
+        let name = Self::normalized_runtime_resource_name(name);
+        let kind = Self::resource_kind_for_open(engine, name, resource_format_tex_input);
+        let package = Self::resource_package_owner(engine, name, kind);
+        let request = ResourceRequest {
+            name,
+            kind,
+            package: package.as_deref(),
+            format: resource_format_tex_input,
+            mode: "rb",
+            source: None,
+        };
+        let virtual_key = Self::virtual_file_key(name);
+        if let Some(bytes) = engine.virtual_files.get(&virtual_key) {
+            Some(bytes.clone())
+        } else {
+            engine.resources.read(request)
+        }
+    }
+
+    pub(crate) unsafe fn boundary_get_file_size(
+        engine: *mut PortableTexEngine<'_>,
+        string: integer,
+    ) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        let Some(name) = engine.pool_string(string as strnumber) else {
+            return;
+        };
+        // expl3's file layer (`\file_full_name:n`) decides a file EXISTS solely
+        // by whether `\filesize` expands to a non-empty value. We have no host
+        // filesystem (wasm target): answer from the ResourceProvider. When the
+        // provider serves the resource, report its real byte length; otherwise
+        // (the in-memory job fragment we feed, which has no backing file, or a
+        // probe for an asset we don't carry) report a nonzero placeholder so the
+        // existence check still passes. Returning nothing here makes expl3
+        // conclude the file is missing, which silently aborts data-file loads
+        // like unicode-math's `\file_get {unicode-math-table.tex}`.
+        const PLACEHOLDER_FILE_SIZE: usize = 4096;
+        let size = Self::resource_bytes_for_name(engine, name.as_str())
+            .map_or(PLACEHOLDER_FILE_SIZE, |bytes| bytes.len());
+        Self::append_text_to_pool(engine, size.to_string().as_str());
+    }
+
+    pub(crate) unsafe fn load_pool_strings(
+        engine: &mut PortableTexEngine<'_>,
+        spare_size: integer,
+    ) -> EngineFlow<integer> {
+        if engine.state.strpool.is_null() || engine.state.strstart.is_null()
+            || spare_size <= 0
+        {
+            return Ok(0);
+        }
+        let mut used = 0_i32;
+        let mut last = 0_i32;
+        for line in include_str!("../pool/xetex.pool").lines() {
+            if line.starts_with('*') {
+                break;
+            }
+            let bytes = line.as_bytes();
+            let text = if bytes.len() >= 2 && bytes[0].is_ascii_digit()
+                && bytes[1].is_ascii_digit()
+            {
+                &line[2..]
+            } else {
+                line
+            };
+            let units = text.encode_utf16().count().min(i32::MAX as usize) as integer;
+            used = used.saturating_add(units);
+            if used >= spare_size
+                || engine.state.poolptr.saturating_add(units) > engine.state.poolsize
+            {
+                return Ok(0);
+            }
+            for unit in text.encode_utf16() {
+                *engine.state.strpool.offset(engine.state.poolptr as isize) = unit
+                    as packedUTF16code;
+                engine.state.poolptr += 1;
+            }
+            last = engine.makestring()?;
+        }
+        Ok(last)
+    }
+
+    pub(crate) unsafe fn boundary_open_log_file(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<()> {
+        let Some(engine) = engine.as_mut() else {
+            return Ok(());
+        };
+        let old_setting = engine.state.selector;
+        if engine.state.jobname == 0 {
+            if let Some(jobname) = Self::intern_static_pool_string(engine, "texput")? {
+                engine.state.jobname = jobname;
+            }
+        }
+        engine.state.logopened = true_0 as boolean;
+        engine.state.selector = (old_setting as i32 + 2).clamp(0, 21) as eightbits;
+        Ok(())
+    }
+
+    pub(crate) unsafe fn boundary_jump_out(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<core::convert::Infallible> {
+        // Status arithmetic is LOAD-BEARING and unchanged: history<=1 is the
+        // normal `\end`/dump termination (status 0 => "completed"); anything
+        // else is an error abort (status 1). Every passing conformance test
+        // funnels its normal end through here, so this must stay byte-exact.
+        let status = if let Some(engine) = engine.as_ref() {
+            if engine.state.history as i32 <= 1 {
+                0 as integer
+            } else {
+                1 as integer
+            }
+        } else {
+            1 as integer
+        };
+        Self::abort_engine(engine, status)
+    }
+
+    pub(crate) unsafe fn boundary_shipout(
+        engine: *mut PortableTexEngine<'_>,
+        box_node: halfword,
+    ) {
+        if let Some(engine) = engine.as_mut() {
+            engine.stripped_shipouts = engine.stripped_shipouts.saturating_add(1);
+            engine.last_stripped_shipout_box = Some(PortableNodeHandle(box_node));
+        }
+    }
+
+    pub(crate) unsafe fn boundary_capture_fragment_box(
+        engine: *mut PortableTexEngine<'_>,
+        box_node: halfword,
+        mode: integer,
+        boxcontext: integer,
+    ) -> boolean {
+        if let Some(engine) = engine.as_mut() {
+            if engine.fragment_capture_enabled {
+                engine.captured_fragment_root = Some(PortableNodeHandle(box_node));
+                let absolute_mode = if mode >= 0 { mode } else { -mode };
+                if absolute_mode == 1 && boxcontext < 1_073_741_824 {
+                    return true_0;
+                }
+            }
+        }
+        false_0
+    }
+
+    pub(crate) unsafe fn boundary_build_page(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<()> {
+        if let Some(engine) = engine.as_mut() {
+            if engine.format_initialization
+                && engine.state.curcmd as i32 == 15
+                && engine.state.curchr == 1
+            {
+                // Dump during format build: status-0 abort (normal end of the
+                // format-initialization run). Propagate via `?` so the engine
+                // does not unwind.
+                Self::abort_engine(engine as *mut PortableTexEngine<'_>, 0 as integer)?;
+            }
+            engine.stripped_page_builds = engine.stripped_page_builds.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    pub(crate) unsafe fn boundary_prune_page_top(
+        engine: *mut PortableTexEngine<'_>,
+        node: halfword,
+        _saving: boolean,
+    ) -> halfword {
+        if let Some(engine) = engine.as_mut() {
+            engine.stripped_page_top_prunes =
+                engine.stripped_page_top_prunes.saturating_add(1);
+        }
+        node
+    }
+
+    pub(crate) unsafe fn boundary_special_out(
+        engine: *mut PortableTexEngine<'_>,
+        node: halfword,
+    ) -> EngineFlow<()> {
+        let Some(engine) = engine.as_mut() else {
+            return Ok(());
+        };
+        if node < engine.state.memmin || node > engine.state.memend {
+            engine.stripped_special_outputs = engine
+                .stripped_special_outputs
+                .saturating_add(1);
+            return Ok(());
+        }
+        let mem = engine.state.zmem.as_mut_ptr();
+        if (*mem.offset(node as isize)).hh.u.B0 as i32 == 8 {
+            match (*mem.offset(node as isize)).hh.u.B1 as i32 {
+                0 => {
+                    Self::boundary_open_write_whatsit(engine, node);
+                    return Ok(());
+                }
+                1 => {
+                    Self::boundary_write_whatsit(engine, node)?;
+                    return Ok(());
+                }
+                2 => {
+                    Self::boundary_close_write_whatsit(engine, node);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        engine.stripped_special_outputs = engine
+            .stripped_special_outputs
+            .saturating_add(1);
+        Ok(())
+    }
+
+    unsafe fn boundary_open_write_whatsit(engine: &mut PortableTexEngine<'_>, node: halfword) {
+        let mem = engine.state.zmem.as_mut_ptr();
+        let stream = (*mem.offset((node + 1) as isize)).hh.v.LH as usize;
+        if stream >= 16 {
+            return;
+        }
+
+        if engine.state.writeopen[stream] != 0 {
+            Self::boundary_close_write_stream(engine, stream);
+        }
+
+        engine.state.curname = (*mem.offset((node + 1) as isize)).hh.v.RH as strnumber;
+        engine.state.curarea = (*mem.offset((node + 2) as isize)).hh.v.LH as strnumber;
+        engine.state.curext = (*mem.offset((node + 2) as isize)).hh.v.RH as strnumber;
+        if engine.state.curext == 335 {
+            engine.state.curext = 799;
+        }
+        engine.zpackfilename(engine.state.curname, engine.state.curarea, engine.state.curext);
+        let Some(name) = Self::current_resource_name(engine as *mut PortableTexEngine<'_>) else {
+            return;
+        };
+        let handle = Box::new(PortableFileHandle::new(
+            name,
+            ResourceKind::TexInput,
+            None,
+            resource_format_tex_input,
+            Vec::new(),
+        ));
+        engine.state.writefile[stream] = Box::into_raw(handle);
+        engine.state.writeopen[stream] = true_0;
+    }
+
+    unsafe fn boundary_write_whatsit(
+        engine: &mut PortableTexEngine<'_>,
+        node: halfword,
+    ) -> EngineFlow<()> {
+        let mem = engine.state.zmem.as_mut_ptr();
+        let stream = (*mem.offset((node + 1) as isize)).hh.v.LH as usize;
+        if stream >= 16 || engine.state.writeopen[stream] == 0 {
+            return Ok(());
+        }
+        let write_tokens = engine.profile.write_token_constants();
+        let q = engine.getavail()?;
+        (*mem.offset(q as isize)).hh.v.LH = write_tokens.open_group_token;
+        let r = engine.getavail()?;
+        (*mem.offset(q as isize)).hh.v.RH = r;
+        (*mem.offset(r as isize)).hh.v.LH = write_tokens.end_write_token;
+        engine.zbegintokenlist(q, 4)?;
+        engine.zbegintokenlist((*mem.offset((node + 1) as isize)).hh.v.RH, 15)?;
+        let q = engine.getavail()?;
+        (*mem.offset(q as isize)).hh.v.LH = write_tokens.close_group_token;
+        engine.zbegintokenlist(q, 4)?;
+        let old_mode = engine.state.curlist.modefield;
+        engine.state.curlist.modefield = 0;
+        engine.state.curcs = engine.state.writeloc;
+        engine.zscantoks(false_0, true_0)?;
+        engine.state.curlist.modefield = old_mode;
+        engine.gettoken()?;
+        if engine.state.curtok != write_tokens.end_write_token {
+            while engine.state.curtok != write_tokens.end_write_token {
+                engine.gettoken()?;
+            }
+        }
+        engine.endtokenlist()?;
+        let old_setting = engine.state.selector;
+        engine.state.selector = stream as eightbits;
+        engine.ztokenshow(engine.state.defref);
+        engine.println();
+        engine.state.selector = old_setting;
+        engine.zflushlist(engine.state.defref);
+        Ok(())
+    }
+
+    unsafe fn boundary_close_write_whatsit(engine: &mut PortableTexEngine<'_>, node: halfword) {
+        let mem = engine.state.zmem.as_mut_ptr();
+        let stream = (*mem.offset((node + 1) as isize)).hh.v.LH as usize;
+        if stream < 16 {
+            Self::boundary_close_write_stream(engine, stream);
+        }
+    }
+
+    unsafe fn boundary_close_write_stream(engine: &mut PortableTexEngine<'_>, stream: usize) {
+        if stream >= 16 || engine.state.writeopen[stream] == 0 {
+            return;
+        }
+        let file = engine.state.writefile[stream];
+        engine.state.writefile[stream] = core::ptr::null_mut();
+        engine.state.writeopen[stream] = false_0;
+        if file.is_null() {
+            return;
+        }
+        let handle = Box::from_raw(file);
+        let key = Self::virtual_file_key(handle.name.as_str());
+        engine.virtual_files.insert(key, handle.bytes);
+    }
+
+    pub(crate) unsafe fn boundary_load_picture(
+        engine: *mut PortableTexEngine<'_>,
+        _is_pdf: boolean,
+    ) {
+        if let Some(engine) = engine.as_mut() {
+            engine.stripped_picture_loads = engine.stripped_picture_loads.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn record_stripped_source_special(engine: *mut PortableTexEngine<'_>) {
+        if let Some(engine) = unsafe { engine.as_mut() } {
+            engine.stripped_source_specials = engine.stripped_source_specials.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn record_stripped_write_whatsit_diagnostic(engine: *mut PortableTexEngine<'_>) {
+        if let Some(engine) = unsafe { engine.as_mut() } {
+            engine.stripped_write_whatsit_diagnostics =
+                engine.stripped_write_whatsit_diagnostics.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn record_stripped_pdf_extension(engine: *mut PortableTexEngine<'_>) {
+        if let Some(engine) = unsafe { engine.as_mut() } {
+            engine.stripped_pdf_extensions = engine.stripped_pdf_extensions.saturating_add(1);
+        }
+    }
+
+    /// Resolve a freshly opened file's input encoding.
+    ///
+    /// Mirrors XeTeX's `u_open_in`, which only AUTO-sniffs UNICODE text inputs:
+    /// the default `\XeTeXinputencoding` is `auto`, applied to `read`/`\input`
+    /// text streams. Binary inputs (`tfm`/`font`/`fmt`/…) are opened as raw byte
+    /// files in the original engine and must NOT be sniffed (a stray `FE FF` at
+    /// the start of a TFM must not skip bytes). The UTF-8/UTF-16 decoders are
+    /// also XeTeX-only; under the non-XeTeX (`tex`/`etex`) profiles every input
+    /// is read raw, byte == scalar, matching 8-bit TeX.
+    fn resolve_input_encoding(engine: &PortableTexEngine<'_>, handle: &mut PortableFileHandle) {
+        let is_text = handle.format == resource_format_tex_input || handle.format == 0;
+        if engine.is_xetex() && is_text {
+            handle.resolve_text_encoding_auto();
+        } else {
+            handle.encoding = InputEncoding::Bytes;
+        }
+    }
+
+    pub(crate) unsafe fn boundary_open_input(
+        engine: *mut PortableTexEngine<'_>,
+        file: *mut NativeFileHandle,
+        format: integer,
+        mode: const_string,
+    ) -> boolean {
+        let Some(engine) = engine.as_mut() else {
+            if !file.is_null() {
+                *file = core::ptr::null_mut();
+            }
+            return false_0;
+        };
+        let Some(name) = Self::current_resource_name(engine as *mut PortableTexEngine<'_>) else {
+            if !file.is_null() {
+                *file = core::ptr::null_mut();
+            }
+            return false_0;
+        };
+        let mode = Self::mode_string(mode);
+        let request_kind = Self::resource_kind_for_open(engine, name.as_str(), format);
+        let request_package = Self::resource_package_owner(engine, name.as_str(), request_kind);
+        let source: Option<PortableSourceSpan> = None;
+        let request = ResourceRequest {
+            name: name.as_str(),
+            kind: request_kind,
+            package: request_package.as_deref(),
+            format,
+            mode: mode.as_str(),
+            source: source.clone(),
+        };
+        engine.resource_requests = engine.resource_requests.saturating_add(1);
+        let virtual_key = Self::virtual_file_key(name.as_str());
+        let bytes = if let Some(bytes) = engine.virtual_files.get(&virtual_key) {
+            bytes.clone()
+        } else if let Some(bytes) = engine.resources.read(request) {
+            bytes
+        } else {
+            engine.resource_request_records.push(PortableResourceRequestRecord {
+                name,
+                kind: request_kind,
+                package: request_package,
+                format,
+                mode,
+                source,
+                byte_len: None,
+            });
+            if !file.is_null() {
+                *file = core::ptr::null_mut();
+            }
+            return false_0;
+        };
+        let byte_len = Self::source_index(bytes.len());
+        engine.resource_request_records.push(PortableResourceRequestRecord {
+            name: name.clone(),
+            kind: request_kind,
+            package: request_package.clone(),
+            format,
+            mode: mode.clone(),
+            source,
+            byte_len: Some(byte_len),
+        });
+        let mut handle = Box::new(PortableFileHandle::new(
+            name,
+            request_kind,
+            request_package,
+            format,
+            bytes,
+        ));
+        // Resolve the input encoding (XeTeX `u_open_in` AUTO sniff) for text
+        // inputs under the XeTeX profile; binary inputs and non-XeTeX profiles
+        // stay raw `Bytes` with no BOM consumption.
+        Self::resolve_input_encoding(engine, &mut handle);
+        if format == resource_format_tfm {
+            engine.state.tfmtemp = handle.read_byte().map_or(-1, |byte| byte as integer);
+        }
+        if !file.is_null() {
+            *file = Box::into_raw(handle);
+            return true_0;
+        }
+        drop(handle);
+        false_0
+    }
+
+    unsafe fn begin_primary_input_raw(
+        self: &mut Self,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> EngineFlow<boolean> {
+        if self.state.inputfile.is_null() || self.state.sourcefilenamestack.is_null()
+            || self.state.fullsourcefilenamestack.is_null()
+            || self.state.buffer.is_null()
+        {
+            return Ok(false_0);
+        }
+        let Some(source_name) = Self::intern_static_pool_string(self, name)? else {
+            return Ok(false_0);
+        };
+        self.beginfilereading()?;
+        let slot = self.state.curinput.indexfield as isize;
+        let mut handle = Box::new(
+            PortableFileHandle::new(
+                name.to_string(),
+                ResourceKind::TexInput,
+                None,
+                resource_format_tex_input,
+                bytes,
+            ),
+        );
+        Self::resolve_input_encoding(self, &mut handle);
+        *self.state.inputfile.offset(slot) = Box::into_raw(handle);
+        self.state.curinput.namefield = source_name as halfword;
+        *self.state.sourcefilenamestack.offset(slot) = source_name;
+        *self.state.fullsourcefilenamestack.offset(slot) = source_name;
+        self.state.curinput.statefield = 33 as quarterword;
+        self.state.line = 1 as integer;
+        self.state.src_primary_name = source_name;
+        self.state.cmd_span = 0;
+        self.state.pending_call_span = 0;
+        self.state.src_user_cmd_span = 0;
+        self.state.src_tok_span = 0;
+        self.state.src_anchor_cmd = 0;
+        self.state.src_grp_stack.clear();
+        self.state.src_grp_closing = 0;
+        self.state.src_call_user_span = 0;
+        self.state.src_line_base = 0;
+        self.state.src_line_buf_start = 0;
+        self.state.src_prev_line_len = 0;
+        self.state.src_line_initialized = false;
+        self.state.curinput.spanfield = 0;
+        self.state.src_native_offsets.clear();
+        self.state.src_stack_cells.clear();
+        self.state.cur_stack_head = 0;
+        if Self::boundary_input_line(
+            self as *mut PortableTexEngine<'_>,
+            *self.state.inputfile.offset(slot) as NativeFileHandle,
+        ) == 0
+        {
+            self.endfilereading();
+            return Ok(false_0);
+        }
+        self.firmuptheline()?;
+        let eqtb = self.state.zeqtb.as_mut_ptr();
+        let endline_char_index = if self.is_xetex() && self.state.eqtbtop >= 7_892_312 {
+            7_892_312_i64
+        } else {
+            27_212_i64
+        };
+        let endline_char = if eqtb.is_null() {
+            -1
+        } else {
+            (*eqtb.offset(endline_char_index as isize)).u.CINT
+        };
+        if !(0..=255).contains(&endline_char) {
+            self.state.curinput.limitfield -= 1;
+        } else {
+            *self.state.buffer.offset(self.state.curinput.limitfield as isize) = endline_char
+                as UnicodeScalar;
+        }
+        self.state.first = (self.state.curinput.limitfield as i32 + 1) as integer;
+        self.state.curinput.locfield = self.state.curinput.startfield;
+        Ok(true_0)
+    }
+
+    pub(crate) unsafe fn boundary_input_line(
+        engine: *mut PortableTexEngine<'_>,
+        file: NativeFileHandle,
+    ) -> boolean {
+        let Some(engine) = engine.as_mut() else {
+            return false_0;
+        };
+        if file.is_null() || engine.state.buffer.is_null() {
+            return false_0;
+        }
+
+        let handle = &mut *file;
+        if !handle.has_remaining() {
+            return false_0;
+        }
+
+        let first = engine.state.first.max(0) as usize;
+        let limit = engine.state.bufsize.max(0) as usize;
+        let mut last = first;
+        // XeTeX `input_line`: decode Unicode scalars via `get_uni_c`, terminating
+        // on EOF / LF (0x0A) / CR (0x0D). A CR coalesces a following LF (the
+        // `skipNextLF` logic), so CRLF reads as a single line break.
+        while last < limit {
+            let Some(scalar) = handle.next_input_scalar() else {
+                break;
+            };
+            match scalar {
+                0x0A => break,
+                0x0D => {
+                    // Peek the next scalar; consume it only if it is LF. The peek
+                    // must be restorable (the decoder may have advanced the cursor
+                    // and/or set saved_char), so snapshot both before decoding.
+                    let saved_cursor = handle.cursor;
+                    let saved_lookahead = handle.saved_char;
+                    let was_eof = handle.eof_after_failed_read;
+                    match handle.next_input_scalar() {
+                        Some(0x0A) => {} // CRLF: consume the LF.
+                        _ => {
+                            // Not LF (or EOF): restore the peeked state.
+                            handle.cursor = saved_cursor;
+                            handle.saved_char = saved_lookahead;
+                            handle.eof_after_failed_read = was_eof;
+                        }
+                    }
+                    break;
+                }
+                scalar => {
+                    *engine.state.buffer.offset(last as isize) = scalar as UnicodeScalar;
+                    last += 1;
+                }
+            }
+        }
+
+        while last > first && *engine.state.buffer.offset((last - 1) as isize) == b' ' as UnicodeScalar {
+            last -= 1;
+        }
+        if handle.format == resource_format_tex_input || handle.format == 0 {
+            engine.current_input_package_owner = handle.package.clone();
+        }
+        // Source tracking multi-line accumulator (HOOK 7): each line of the
+        // primary input reloads at the same buffer base, so `loc - first` is a
+        // within-line column. Track the absolute char offset of the current
+        // line's first slot (`src_line_base`), advancing it by the previous
+        // line's length + 1 (the line break) at each refill. The buffer holds
+        // `[first, last)` file characters for this line.
+        if engine.state.source_tracking
+            && engine.state.curinput.namefield as strnumber == engine.state.src_primary_name
+        {
+            if engine.state.src_line_initialized {
+                engine.state.src_line_base += engine.state.src_prev_line_len + 1;
+            } else {
+                engine.state.src_line_base = 0;
+                engine.state.src_line_initialized = true;
+            }
+            engine.state.src_line_buf_start = first as integer;
+            engine.state.src_prev_line_len = last.saturating_sub(first) as u32;
+            // The token that straddles the line break is read in the same
+            // `get_next` call as this refill, so the top-of-loop token-start
+            // snapshot is stale (it points at the previous line). Re-anchor it to
+            // the new line's start so its span is measured in the new line's
+            // coordinates.
+            engine.state.src_token_start = first as integer;
+        }
+        engine.state.last = last as integer;
+        true_0
+    }
+
+    pub(crate) unsafe fn boundary_read_byte(_file: NativeFileHandle) -> integer {
+        if _file.is_null() {
+            return -1;
+        }
+        (&mut *_file).read_byte().map_or(-1, |byte| byte as integer)
+    }
+
+    pub(crate) unsafe fn boundary_end_of_file(_file: NativeFileHandle) -> integer {
+        if _file.is_null() || (&*_file).is_eof() {
+            1
+        } else {
+            0
+        }
+    }
+
+    pub(crate) unsafe fn boundary_flush_file(_file: NativeFileHandle) -> integer {
+        0
+    }
+
+    pub(crate) unsafe fn boundary_write_byte(
+        engine: *mut PortableTexEngine<'_>,
+        character: integer,
+        file: NativeFileHandle,
+    ) -> integer {
+        if !file.is_null() {
+            if let Ok(byte) = u8::try_from(character) {
+                (*file).bytes.push(byte);
+            }
+            return character;
+        }
+        if let Some(engine) = engine.as_mut() {
+            if let Ok(byte) = u8::try_from(character) {
+                engine.transcript_bytes.push(byte);
+            }
+        }
+        character
+    }
+
+    pub(crate) unsafe fn boundary_close_file(_file: NativeFileHandle) {
+        if !_file.is_null() {
+            drop(Box::from_raw(_file));
+        }
+    }
+
+    pub(crate) unsafe fn get_seconds_and_micros(
+        engine: *mut PortableTexEngine<'_>,
+        seconds: *mut integer,
+        micros: *mut integer,
+    ) {
+        let clock = engine
+            .as_mut()
+            .map(|engine| engine.platform.clock())
+            .unwrap_or_default();
+        if !seconds.is_null() {
+            *seconds = clock.seconds;
+        }
+        if !micros.is_null() {
+            *micros = clock.micros;
+        }
+    }
+
+    pub(crate) unsafe fn linebreak_start(
+        engine: *mut PortableTexEngine<'_>,
+        font: integer,
+        locale: integer,
+        text: *mut uint16_t,
+        text_length: integer,
+    ) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        let text = if text.is_null() || text_length <= 0 {
+            &[]
+        } else {
+            core::slice::from_raw_parts(text as *const uint16_t, text_length as usize)
+        };
+        engine
+            .platform
+            .linebreak_start(PortableLinebreakRequest { font, locale, text });
+    }
+
+    pub(crate) unsafe fn linebreak_next(engine: *mut PortableTexEngine<'_>) -> integer {
+        engine
+            .as_mut()
+            .and_then(|engine| engine.platform.linebreak_next())
+            .unwrap_or(-1)
+    }
+
+    pub(crate) unsafe fn abort_engine(
+        engine: *mut PortableTexEngine<'_>,
+        status: integer,
+    ) -> EngineFlow<core::convert::Infallible> {
+        if let Some(engine) = engine.as_mut() {
+            engine.last_abort_status = Some(status);
+        }
+        Err(EngineBreak::Abort(EngineAbort { status }))
+    }
+
+    /// Reject the current fragment with `message` when the sandbox is active; a
+    /// no-op (e.g. during format construction) otherwise. The sandbox analogue of
+    /// [`abort_engine`]: it breaks the run via the `?` chain with an [`EngineError`].
+    pub(crate) unsafe fn sandbox_reject(
+        engine: *mut PortableTexEngine<'_>,
+        message: &str,
+    ) -> EngineFlow<()> {
+        if let Some(engine) = engine.as_ref() {
+            if engine.sandbox {
+                return Err(EngineBreak::Error(EngineError {
+                    message: message.into(),
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    /// Sandbox `$`/math-shift guard, called from `init_math` (entering math). The
+    /// fragment legitimately enters math via the wrapper `$` (depth 0 -> 1) and may NEST
+    /// more math inside a text block -- `\hbox{$x$}`, `\text{$y$}` -- which opens at depth
+    /// >= 1 and is allowed. A BREAKOUT is a user `$` that, in text mode, re-opens math at
+    /// depth 0 AFTER the wrapper already opened (the wrapper's math was closed back to the
+    /// outer level); reject only that. No-op outside the sandbox.
+    pub(crate) unsafe fn sandbox_open_math(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<()> {
+        if let Some(engine) = engine.as_mut() {
+            if engine.sandbox {
+                if engine.sandbox_math_depth == 0 && engine.sandbox_math_opened {
+                    return Err(EngineBreak::Error(EngineError {
+                        message: "math shift ($) is not allowed inside a math expression"
+                            .into(),
+                    }));
+                }
+                engine.sandbox_math_opened = true;
+                engine.sandbox_math_depth += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sandbox companion to [`sandbox_open_math`], called from `after_math` (leaving
+    /// math): pop one MATH nesting level. Depth returns to 0 only when the wrapper math
+    /// closes, so a nested `$x$` closing (depth 2 -> 1) does NOT mark the expression
+    /// finished and later math stays allowed. No-op off-sandbox.
+    pub(crate) unsafe fn sandbox_close_math(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<()> {
+        if let Some(engine) = engine.as_mut() {
+            if engine.sandbox && engine.sandbox_math_depth > 0 {
+                engine.sandbox_math_depth -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sandbox work-budget tick, called once per `main_control` iteration. Rejects
+    /// the fragment once [`SANDBOX_OP_BUDGET`] iterations are exceeded, bounding
+    /// runaway expansion / infinite loops (`\def\x{\x}\x`). No-op outside sandbox.
+    pub(crate) unsafe fn sandbox_tick(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<()> {
+        if let Some(engine) = engine.as_mut() {
+            if engine.sandbox {
+                engine.sandbox_ops = engine.sandbox_ops.saturating_add(1);
+                if engine.sandbox_ops > SANDBOX_OP_BUDGET {
+                    return Err(EngineBreak::Error(EngineError {
+                        message: "expression is too complex or did not terminate".into(),
+                    }));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Surfacing hook called from `error()` right after it prints the diagnostic
+    /// and its context: turn the TeX error into a breaking [`EngineError`]
+    /// carrying the captured message, threaded back to the driver via the `?`
+    /// chain like an abort. TeX's normal log-and-recover never runs inside an
+    /// equation render -- an error is always real and is reported, not swallowed.
+    /// Declared `EngineFlow<()>` (not `<Infallible>`) so the unreachable tail of
+    /// `error()` stays warning-free.
+    pub(crate) unsafe fn surface_error(
+        engine: *mut PortableTexEngine<'_>,
+    ) -> EngineFlow<()> {
+        let message = engine
+            .as_ref()
+            .map(|engine| engine.capture_last_error_message())
+            .unwrap_or_else(|| "TeX error".into());
+        Err(EngineBreak::Error(EngineError { message }))
+    }
+
+    // =====================================================================
+    // Source tracking (SpanField + CmdLatch). All of this is gated on the
+    // runtime `source_tracking` flag; with it false every hook below is a
+    // cheap predictable no-op and the default render path allocates nothing.
+    // The only "inheritance" is the two principled rules: (a) a macro body
+    // inherits its INVOCATION span (the call-site baseline), and (b) math
+    // noads re-point `cmd_span` from their own parse-time `node_src`. There
+    // is no byte-matching, input-stack scanning, nearest-macro guessing, or
+    // blanket parent inheritance.
+    // =====================================================================
+
+    /// Enable/disable source tracking, lazily (re)allocating the `node_src`
+    /// shadow (sized to `mem`) and clearing the intern tables. Resets all the
+    /// transient registers so a render starts clean. Default off.
+    pub fn set_source_tracking(self: &mut Self, on: bool) {
+        self.state.source_tracking = on;
+        self.state.cmd_span = 0;
+        self.state.pending_call_span = 0;
+        self.state.src_token_start = 0;
+        self.state.src_line_base = 0;
+        self.state.src_line_buf_start = 0;
+        self.state.src_prev_line_len = 0;
+        self.state.src_line_initialized = false;
+        self.state.src_call_start = 0;
+        self.state.src_call_name = 0;
+        self.state.src_call_state = 0;
+        self.state.src_call_index = 0;
+        self.state.src_call_span = 0;
+        self.state.src_call_argspan = 0;
+        self.state.src_user_cmd_span = 0;
+        self.state.src_tok_span = 0;
+        self.state.src_anchor_cmd = 0;
+        self.state.src_grp_stack.clear();
+        self.state.src_grp_closing = 0;
+        self.state.src_call_user_span = 0;
+        self.state.curinput.spanfield = 0;
+        self.state.src_spans.clear();
+        self.state.src_dedup.clear();
+        self.state.src_native_offsets.clear();
+        self.state.src_stack_cells.clear();
+        self.state.cur_stack_head = 0;
+        let end = if on { self.state.mem.len() } else { 0 };
+        self.state.node_src = PagedArray::new(0, end, node_src_default, node_src_sig);
+        self.state.node_stack = PagedArray::new(0, end, node_stack_default, node_stack_sig);
+    }
+
+    /// Whether source tracking is currently enabled.
+    pub fn source_tracking_enabled(&self) -> bool {
+        self.state.source_tracking
+    }
+
+    /// Intern a span into the dedup table, returning a stable first-touch
+    /// `SrcId` (1-based; `0` is NONE). Uses the explicit `self: &mut Self`
+    /// receiver form the patcher's passes expect (the `&mut self` shorthand is
+    /// stripped).
+    fn intern_span_raw(self: &mut Self, name: strnumber, start: u32, end: u32, role: u8) -> SrcId {
+        let span = RawSpan { name, start, end, role };
+        if let Some(&id) = self.state.src_dedup.get(&span) {
+            return id;
+        }
+        self.state.src_spans.push(span);
+        let id = self.state.src_spans.len() as SrcId;
+        self.state.src_dedup.insert(span, id);
+        id
+    }
+
+    /// Absolute character offset, in the primary input's own coordinates, of a
+    /// buffer position `loc`: `line_base + (loc - line_start)`.
+    fn src_buf_offset(&self, loc: integer) -> u32 {
+        let col = loc as i64 - self.state.src_line_buf_start as i64;
+        (self.state.src_line_base as i64 + col).max(0) as u32
+    }
+
+    /// Resolve a node's stamped span to a [`PortableSourceSpan`] in source-own
+    /// coordinates, or `None` when the node is unstamped (SrcId 0) or its source
+    /// name cannot be read. `&self`: safe on the read-only IR snapshot path.
+    pub(crate) fn resolve_node_src(&self, node: halfword) -> Option<PortableSourceSpan> {
+        if !self.state.source_tracking || node < 0 {
+            return None;
+        }
+        let id = self.state.node_src.get_copy(node as usize);
+        if id == 0 {
+            return None;
+        }
+        let raw = *self.state.src_spans.get((id - 1) as usize)?;
+        let name = unsafe { self.pool_string(raw.name) }?;
+        Some(PortableSourceSpan {
+            name,
+            start: raw.start,
+            end: raw.end,
+            role: raw.role,
+        })
+    }
+
+    /// HOOK 1a (`get_next`, top of the outer loop): snapshot the buffer position
+    /// of the token about to be lexed. Re-run each loop iteration so leading
+    /// skipped material (comments / ignored chars) is excluded from the span.
+    pub(crate) unsafe fn src_mark_token_start(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if engine.state.source_tracking && engine.state.curinput.statefield as i32 != 0 {
+            engine.state.src_token_start = engine.state.curinput.locfield as integer;
+        }
+    }
+
+    /// HOOK 1b (`get_next` tail): the SOLE buffer producer. For real buffer
+    /// input set the ambient `spanfield` to the just-lexed TOKEN range (so a
+    /// control word spans backslash..last letter). Token-list input is handled
+    /// by [`Self::src_tokenlist_span`], not here.
+    pub(crate) unsafe fn src_record_buffer_span(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || engine.state.curinput.statefield as i32 == 0 {
+            return;
+        }
+        let a = engine.src_buf_offset(engine.state.src_token_start);
+        let b = engine.src_buf_offset(engine.state.curinput.locfield as integer);
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let name = engine.state.curinput.namefield as strnumber;
+        let id = engine.intern_span_raw(name, lo, hi, 0);
+        engine.state.curinput.spanfield = id;
+        engine.state.src_tok_span = id;
+        // When the just-lexed buffer token is a CONTROL SEQUENCE (`curcs != 0`) of
+        // the primary fragment, it is a user-typed command; remember it as the
+        // active user command. Kernel helper macros reached through its expansion
+        // are read from token lists (not the buffer), so they never reset this, and
+        // it survives token-list pops — letting a helper invoked from the buffer
+        // after a `\futurelet`/`\@ifnextchar` peek recover the user command start.
+        //
+        // Gate on `scannerstatus == 0` (normal): a cs lexed while the scanner is
+        // MATCHING/ABSORBING another macro's arguments is being COLLECTED, not
+        // executed -- it belongs to that outer command's argument, not the active
+        // command line. In `\sqrt[\phantom{x}]{x}` the `\phantom` is absorbed into
+        // `\@sqrt`'s optional `[..]` while matching, so without this gate it
+        // overwrites the real user command `\sqrt`; the later radicand helper then
+        // anchors its buffer baseline to the stale `\phantom` start, framing the
+        // degree box as `[\phantom .. radicand]` = the `[6,21)` overshoot. A digit
+        // degree (`\sqrt[3]{x}`) has no cs to hijack, which is why it never bit.
+        if engine.state.curcs != 0
+            && name == engine.state.src_primary_name
+            && engine.state.scannerstatus as i32 == 0
+        {
+            engine.state.src_user_cmd_span = id;
+            // A buffer read means we have left any token-list replay context, so the
+            // replay-tracked anchor command is now stale: clear it. (`src_user_cmd_span`,
+            // by contrast, intentionally persists so a `\futurelet`-peeked helper can
+            // still recover the buffer command.)
+            engine.state.src_anchor_cmd = 0;
+        }
+    }
+
+    /// HOOK 1c (`get_next` token-list branch): when re-reading from an ARGUMENT
+    /// / template / backed-up / inserted level (token type < `macro`=5), surface
+    /// the re-read cell's own scan-time span so a macro argument recovers its
+    /// typed position. Macro-body (`macro`=5) and `every_*` (>=6) levels keep the
+    /// inherited call-site baseline, so synthesized body content maps to the
+    /// invocation.
+    pub(crate) unsafe fn src_tokenlist_span(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        if engine.state.curinput.indexfield as i32 >= 5 {
+            return;
+        }
+        // Freeze the token's OWN origin as it is read, so a later `back_input` can
+        // re-stamp it with this (not the ambient, look-ahead-advanced span). Only for
+        // NON-macro-body levels (`idx < 5`): a macro body's tokens map to their
+        // invocation (rule a), never to their definition site, so letting their cell
+        // span leak here would make a backed-up body token (e.g. `\frac`'s `\over`)
+        // carry its definition position instead of the call-site baseline.
+        {
+            let lf = engine.state.curinput.locfield as i32;
+            if lf >= 0 {
+                let cid = engine.state.node_src.get_copy(lf as usize);
+                if cid != 0 {
+                    engine.state.src_tok_span = cid;
+                }
+            }
+        }
+        let cell = engine.state.curinput.locfield as i32;
+        if cell < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(cell as usize);
+        if id != 0 {
+            engine.state.curinput.spanfield = id;
+        }
+    }
+
+    /// HOOK 1d (`back_input`): when a token is pushed back onto the input, stamp the
+    /// freshly-allocated backed-up cell with the token's OWN origin (`src_tok_span`,
+    /// frozen at the token's last read) rather than the ambient `spanfield`. The two
+    /// diverge whenever the lexer has read PAST the token before backing it up -- the
+    /// `\let`/`\futurelet` (and thus `\@ifnextchar`) two-token look-ahead reads a
+    /// second token, advancing `spanfield`, then re-emits the first. Without this the
+    /// re-emitted token (e.g. the single-char optional `[a]` degree of `\sqrt`, which
+    /// LaTeX's `\@ifnextchar`-driven `\sqrt`/`\root` machinery shuttles through such a
+    /// look-ahead) would inherit the look-ahead's span -- the construct baseline --
+    /// and the typed char's byte-span would be lost. The token's real origin is still
+    /// live in `src_tok_span`, so the leaf is recoverable here, at the re-emission.
+    pub(crate) unsafe fn src_back_input_stamp(engine: *mut Self, p: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || p < 0 {
+            return;
+        }
+        let id = engine.state.src_tok_span;
+        if id != 0 {
+            engine.state.node_src.set(p as usize, id);
+        }
+    }
+
+    /// HOOK 2 (`main_control` dispatch, right after `get_x_token`): freeze the
+    /// commanding token's span before it runs any argument sub-scan. This single
+    /// site solves `\char`/`\mathchar`/`\accent` scan-loss for free.
+    pub(crate) unsafe fn src_latch_cmd_span(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if engine.state.source_tracking {
+            engine.state.cmd_span = engine.state.curinput.spanfield;
+        }
+    }
+
+    /// HOOK 3 (`get_avail`): stamp every single-word cell with the ambient span
+    /// — token cells (so re-read arguments recover their typed position) and TFM
+    /// char nodes provisionally (overwritten by [`Self::src_stamp_char`]). Also
+    /// snapshots the live enclosing-construct stack head onto `node_stack`.
+    pub(crate) unsafe fn src_stamp_avail(engine: *mut Self, node: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if engine.state.source_tracking && node >= 0 {
+            let id = engine.state.curinput.spanfield;
+            engine.state.node_src.set(node as usize, id);
+            engine.state.node_stack.set(node as usize, engine.state.cur_stack_head);
+        }
+    }
+
+    /// HOOK 4 (`get_node`): stamp every variable-size node AND every noad over
+    /// its whole address range with the current construct span, so the nucleus
+    /// subfield inherits the atom's span with no separate math-field writer. Also
+    /// snapshots the live enclosing-construct stack head onto `node_stack` over the
+    /// same range (independent of `cmd_span`, so a node allocated inside a
+    /// construct still records its enclosure even when its primary is unstamped).
+    pub(crate) unsafe fn src_stamp_node_range(engine: *mut Self, node: halfword, size: integer) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || node < 0 || size <= 0 {
+            return;
+        }
+        let id = engine.state.cmd_span;
+        let head = engine.state.cur_stack_head;
+        let base = node as usize;
+        for i in 0..size as usize {
+            if id != 0 {
+                engine.state.node_src.set(base + i, id);
+            }
+            if head != 0 {
+                engine.state.node_stack.set(base + i, head);
+            }
+        }
+    }
+
+    /// HOOK (`copy_node_list`, after each node is duplicated): a COPY has the same
+    /// source origin as its original, so propagate the original's tracked span (and
+    /// enclosing-construct chain) onto the copy. Without this the copy keeps only the
+    /// ambient `cmd_span` that `get_node` stamped at copy time — which for a
+    /// `\mathchoice`-replicated `\sqrt[#1]{}` degree is the whole construct hull, so the
+    /// degree digit `3` maps to `\sqrt[3]{..}` instead of its own `"3"`. Only overrides
+    /// when the original is stamped (id != 0); an unstamped source leaves the copy's
+    /// `get_node` stamp intact. Uniform across every copied node, by closure.
+    pub(crate) unsafe fn src_carry_copy(engine: *mut Self, src: halfword, dst: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || src < 0 || dst < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(src as usize);
+        if id != 0 {
+            engine.state.node_src.set(dst as usize, id);
+            let head = engine.state.node_stack.get_copy(src as usize);
+            engine.state.node_stack.set(dst as usize, head);
+        }
+    }
+
+    /// HOOK (token COPY): the analogue of [`Self::src_carry_copy`] for the TOKEN
+    /// (not node) memory. Token-list copies go through `store_new_token(info(src))`,
+    /// which copies only the token VALUE -- so the new cell `dest` would keep the
+    /// ambient `get_avail` stamp and lose `src`'s real origin. Carry `src`'s tracked
+    /// span (and enclosing chain) onto `dest`, so a source byte-span rides token
+    /// copies the same way it rides the input stack. This is what lets a SINGLE-token
+    /// macro argument (e.g. the optional `[a]` degree of `\sqrt`) keep its own leaf
+    /// span through expl3's argument re-tokenisation, instead of collapsing to the
+    /// `\sqrt[a]` construct hull. Uniform across every token copy, by closure: the
+    /// anchor is the WEB-layer `src_token_copy` marker (added in the change file at
+    /// every `store_new_token(info(..))` site), not a fragile inlined Rust pattern --
+    /// so it holds for tex, etex and xetex identically.
+    pub(crate) unsafe fn src_carry_token_span(engine: *mut Self, dest: halfword, src: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || dest < 0 || src < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(src as usize);
+        if id != 0 {
+            engine.state.node_src.set(dest as usize, id);
+            let head = engine.state.node_stack.get_copy(src as usize);
+            engine.state.node_stack.set(dest as usize, head);
+        }
+    }
+
+    /// HOOK 5 (`new_character`): overwrite the provisional get_avail stamp on a
+    /// TFM char glyph with the construct span, so `\char98` maps to the command,
+    /// not the scanned digits. Also records the live enclosing-construct stack head
+    /// (overridden for `make_ord` nuclei by [`Self::src_carry_nucleus`]).
+    pub(crate) unsafe fn src_stamp_char(engine: *mut Self, node: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || node < 0 {
+            return;
+        }
+        let id = engine.state.cmd_span;
+        if id != 0 {
+            engine.state.node_src.set(node as usize, id);
+        }
+        engine.state.node_stack.set(node as usize, engine.state.cur_stack_head);
+    }
+
+    /// HOOK 6 (`mlist_to_hlist` noad-loop head): re-point `cmd_span` to noad
+    /// `q`'s own parse-time span, so every bar/surd/delimiter/kern synthesized
+    /// for `q` inherits it — defeating end-of-math `$` staleness with one read.
+    pub(crate) unsafe fn src_mlist_repoint(engine: *mut Self, q: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || q < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(q as usize);
+        if id != 0 {
+            engine.state.cmd_span = id;
+        }
+    }
+
+    /// HOOK (`scan_math` field commit): a math FIELD (nucleus/sub/sup/accent/radical)
+    /// holding a single math-char is filled by `scan_math` directly into the field
+    /// word -- it is NOT a separately-allocated noad, so it carries the enclosing
+    /// noad's stamp, not its own char's. Record the field char's tracked span (the
+    /// ambient `spanfield` of the token that produced it, captured at the commit
+    /// before any look-ahead moves it) keyed on the field ADDRESS, so `clean_box`
+    /// can carry it onto the fresh noad it builds. Uniform: every scanned single-char
+    /// field, by closure -- no per-construct code.
+    pub(crate) unsafe fn src_stamp_field(engine: *mut Self, field: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || field < 0 {
+            return;
+        }
+        let id = engine.state.curinput.spanfield;
+        if id != 0 {
+            engine.state.node_src.set(field as usize, id);
+        }
+    }
+
+    /// HOOK (`clean_box` math-char case): when `clean_box` packages a single-math-char
+    /// FIELD it allocates a FRESH noad and copies the field word into its nucleus; the
+    /// fresh noad was stamped by `get_node` with the ambient (enclosing atom's)
+    /// `cmd_span`, so the mlist re-point would map the cleaned glyph to the BASE. Carry
+    /// the field's own tracked source (recorded at `src_stamp_field`) onto the fresh
+    /// noad so the re-point yields the field char's real origin (fixes `x^2`->`2`,
+    /// `^{\infty}`->`\infty`). Uniform copy-carrier; no glyph/construct logic.
+    pub(crate) unsafe fn src_carry_field(engine: *mut Self, field: halfword, noad: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || field < 0 || noad < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(field as usize);
+        let head = engine.state.node_stack.get_copy(field as usize);
+        if id != 0 {
+            // noad_size = 4; stamp the whole noad range so the loop-head re-point
+            // (reads node_src[noad]) and the nucleus both see the field's source.
+            for i in 0..4usize {
+                engine.state.node_src.set(noad as usize + i, id);
+            }
+        }
+        // Carry the field's enclosing-construct chain too, so the cleaned glyph's
+        // enclosing entries match the field char's nesting, not the fresh noad's.
+        if head != 0 {
+            for i in 0..4usize {
+                engine.state.node_stack.set(noad as usize + i, head);
+            }
+        }
+    }
+
+    /// HOOK (`mlist_to_hlist` make_ord nucleus attach): a directly-built math-char
+    /// nucleus glyph is the non-`clean_box` analogue of [`Self::src_carry_field`].
+    /// `get_node`/`new_character` stamped it with the enclosing noad's construct
+    /// span, so a typed char wrapped in an atom (`\mathbin{+}` -> `+`) would map to
+    /// the construct. Carry the nucleus FIELD's own leaf span -- recorded at
+    /// `scan_math` by [`Self::src_stamp_field`], or by the brace-collapse carry --
+    /// onto the freshly-built glyph node, so it maps to its own char. Per-glyph
+    /// only; never touches `cmd_span`, so a structural rule built for the same noad
+    /// afterward still inherits the construct span via the loop-head re-point.
+    /// Uniform: every directly-built ord-like nucleus glyph, by closure -- no
+    /// per-construct code. When the field carries no leaf span (`\char`/`\mathchar`,
+    /// no `scan_math`) the carry is a no-op and the construct stamp stands.
+    pub(crate) unsafe fn src_carry_nucleus(engine: *mut Self, noad: halfword, glyph: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || noad < 0 || glyph < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(noad as usize + 1);
+        if id != 0 {
+            engine.state.node_src.set(glyph as usize, id);
+        }
+        // Carry the nucleus field's enclosing-construct chain onto the glyph, so a
+        // typed char's enclosing entries are its parse-time nesting (e.g. the
+        // `\mathbin{+}` group frame) rather than the layout-time stack.
+        let head = engine.state.node_stack.get_copy(noad as usize + 1);
+        engine.state.node_stack.set(glyph as usize, head);
+    }
+
+    /// HOOK (`handle_right_brace` math-group collapse): when a braced sub-formula
+    /// `^{\infty}` / `_{y}` reduces to a SINGLE math-char noad, its nucleus is copied
+    /// into the saved FIELD word and the noad is freed -- losing the noad's tracked
+    /// source. Carry `node_src[noad]` onto the field FIRST, so the later `clean_box`
+    /// (via `src_carry_field`) maps the cleaned glyph to the braced char's own origin
+    /// rather than the enclosing atom's. Uniform; no glyph/construct logic.
+    pub(crate) unsafe fn src_carry_collapse(engine: *mut Self, noad: halfword, field: halfword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || noad < 0 || field < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(noad as usize);
+        if id != 0 {
+            engine.state.node_src.set(field as usize, id);
+        }
+        // Carry the collapsing noad's enclosing chain (e.g. the math-group frame
+        // built between its `{`/`}`) onto the field, so the later nucleus carry
+        // gives the cleaned glyph its braced construct as an enclosing entry.
+        let head = engine.state.node_stack.get_copy(noad as usize);
+        if head != 0 {
+            engine.state.node_stack.set(field as usize, head);
+        }
+    }
+
+    /// HOOK 7-aux save (`clean_box` entry): snapshot `cmd_span` so it can be
+    /// restored across recursive sub-box cleaning.
+    pub(crate) unsafe fn src_save_cmd_span(engine: *mut Self) -> u32 {
+        engine.as_ref().map_or(0, |engine| engine.state.cmd_span)
+    }
+
+    /// HOOK 7-aux restore (`clean_box` exit): put the enclosing construct's span
+    /// back so the structural rule built afterward inherits it.
+    pub(crate) unsafe fn src_restore_cmd_span(engine: *mut Self, saved: u32) {
+        if let Some(engine) = engine.as_mut() {
+            if engine.state.source_tracking {
+                engine.state.cmd_span = saved;
+            }
+        }
+    }
+
+    // --- Enclosing-construct stack (source-tracking inc2) -------------------
+    // A small arena of parent-linked frames snapshotting the construct nesting
+    // (macro invocations + delimited primitive argument groups). `cur_stack_head`
+    // is the live top; each node records it in `node_stack` at allocation. The
+    // frames are resolved at IR-emit time into role-tagged EnclosingConstruct
+    // entries, so a consumer can pick any altitude from the leaf primary up.
+
+    /// Push a finalized construct frame (its span already known, e.g. a macro
+    /// invocation hull) and make it the live top. Returns the new 1-based head.
+    fn src_stack_push_span(self: &mut Self, span: SrcId) -> u32 {
+        self.state.src_stack_cells.push(SrcStackCell {
+            span,
+            parent: self.state.cur_stack_head,
+            start: 0,
+            name: 0,
+            pending: false,
+        });
+        let head = self.state.src_stack_cells.len() as u32;
+        self.state.cur_stack_head = head;
+        head
+    }
+
+    /// Push a PENDING group frame: its start offset + source name are known at the
+    /// `{` open, its end is finalized at the matching `}` close. Made the live top.
+    fn src_stack_push_pending(self: &mut Self, start: u32, name: strnumber) -> u32 {
+        self.state.src_stack_cells.push(SrcStackCell {
+            span: 0,
+            parent: self.state.cur_stack_head,
+            start,
+            name,
+            pending: true,
+        });
+        let head = self.state.src_stack_cells.len() as u32;
+        self.state.cur_stack_head = head;
+        head
+    }
+
+    /// Pop the live top frame (LIFO), restoring its parent as the head.
+    fn src_stack_pop(self: &mut Self) {
+        let head = self.state.cur_stack_head;
+        if head != 0 {
+            if let Some(cell) = self.state.src_stack_cells.get((head - 1) as usize) {
+                self.state.cur_stack_head = cell.parent;
+            }
+        }
+    }
+
+    /// HOOK 8b (`end_token_list`): pop the macro-body frame when a macro-body level
+    /// (token type 6) ends, keeping the stack symmetric with HOOK 8a. Also captures
+    /// the FURTHEST-reaching last-token span across the levels popped after a
+    /// `macro_call` (`src_call_argspan`, reset to 0 at `src_macro_begin`) -- the
+    /// closing `}` of the macro's final brace argument -- for the argument hull in
+    /// [`Self::src_macro_set_pending`]. The MAX-end choice (not just the first pop)
+    /// recovers the trailing `}` for a `\mathchoice`-replayed robust `\frac␣`, whose
+    /// pop order surfaces the cs span first and the closing brace later.
+    pub(crate) unsafe fn src_end_token_list(engine: *mut Self, token_type: i32) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        let cand = engine.state.curinput.spanfield;
+        if cand != 0 {
+            let cand_end = engine
+                .state
+                .src_spans
+                .get((cand - 1) as usize)
+                .map(|r| r.end)
+                .unwrap_or(0);
+            let cur_end = if engine.state.src_call_argspan != 0 {
+                engine
+                    .state
+                    .src_spans
+                    .get((engine.state.src_call_argspan - 1) as usize)
+                    .map(|r| r.end)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            if engine.state.src_call_argspan == 0 || cand_end > cur_end {
+                engine.state.src_call_argspan = cand;
+            }
+        }
+        if token_type == 6 {
+            engine.src_stack_pop();
+        }
+    }
+
+    /// HOOK (`scan_math` `{`-argument open): push a PENDING enclosing frame for a
+    /// delimited primitive argument (`\mathbin{+}`, `\sqrt[..]{..}` radicand, ...).
+    /// Its extent starts at the enclosing command's own start (the live `cmd_span`,
+    /// e.g. `\mathbin`) and is finalized at the matching `}` close to span the whole
+    /// `cmd{...}` construct. When no command is active the frame is empty (skipped
+    /// at resolve). General: every scan_math braced field, by closure.
+    pub(crate) unsafe fn src_scan_math_group_open(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        let cmd = engine.state.cmd_span;
+        let (start, name) = if cmd != 0 {
+            match engine.state.src_spans.get((cmd - 1) as usize) {
+                Some(raw) => (raw.start, raw.name),
+                None => (0, 0),
+            }
+        } else {
+            (0, 0)
+        };
+        engine.src_stack_push_pending(start, name);
+        // Consumed-extent: push the group's OPENING `{` token span (the live spanfield
+        // of the brace just scanned) for `src_construct_extent`. Distinct from the
+        // enclosing-frame start above (which is the enclosing COMMAND): `min(noad, {)`
+        // lets a bare `{n\choose k}` group pull its fraction's start to the `{`.
+        engine.state.src_grp_stack.push(engine.state.curinput.spanfield);
+    }
+
+    /// HOOK (`handle_right_brace` math-group close): finalize the PENDING group
+    /// frame (end = the post-`}` buffer offset, same source as the start) and pop
+    /// it. The interned `[start,end)` is the full `cmd{...}` extent.
+    pub(crate) unsafe fn src_scan_math_group_close(engine: *mut Self) {
+        let eptr = engine;
+        let Some(e) = engine.as_mut() else {
+            return;
+        };
+        if !e.state.source_tracking {
+            return;
+        }
+        // Consumed-extent: pop this group's opening `{` span, hand it to
+        // `src_construct_extend_to_loc` (later in the same `9 =>` arm) as the construct's
+        // group-open for the `min(noad, {)` start.
+        e.state.src_grp_closing = e.state.src_grp_stack.pop().unwrap_or(0);
+        let grp = e.state.src_grp_closing;
+        // A `\over`/`\atop`/`\choose` in this group leaves the in-progress generalized
+        // fraction noad in `curlist.auxfield` (still set here, before `fin_mlist`). Apply
+        // the SAME group consumed-extent to it so its bar / `\atopwithdelims` delimiters
+        // map to the whole `{..\choose..}` group -- the one rule reaches the fraction too.
+        let aux = e.state.curlist.auxfield.u.CINT;
+        let frac = if aux > 0 && aux != -(268435455 as i32) { aux } else { -1 };
+        if e.state.cur_stack_head != 0 {
+            let idx = (e.state.cur_stack_head - 1) as usize;
+            if let Some(cell) = e.state.src_stack_cells.get(idx).copied() {
+                // Only finalize a still-pending group frame whose source matches the live
+                // buffer; otherwise just pop (defensive against any non-group top).
+                if cell.pending
+                    && cell.name != 0
+                    && cell.name == e.state.curinput.namefield as strnumber
+                {
+                    let end = e.src_buf_offset(e.state.curinput.locfield as integer);
+                    let (lo, hi) = if cell.start <= end {
+                        (cell.start, end)
+                    } else {
+                        (end, cell.start)
+                    };
+                    let id = e.intern_span_raw(cell.name, lo, hi, 1);
+                    if let Some(c) = e.state.src_stack_cells.get_mut(idx) {
+                        c.span = id;
+                        c.pending = false;
+                    }
+                }
+                e.state.cur_stack_head = cell.parent;
+            }
+        }
+        if frac >= 0 {
+            Self::src_construct_extent(eptr, frac, grp);
+        }
+    }
+
+    /// HOOK (`math_radical` / `math_ac`, right after the construct noad is
+    /// allocated): anchor its source START to the in-fragment USER command. The
+    /// noad was just stamped by `get_node` with the ambient `cmd_span`, which for a
+    /// `\@ifnextchar`-peeked construct (`\sqrt{y}` -> `\sqrtsign` dispatched while
+    /// the buffer `spanfield` still points at the peeked `{`) is the radicand brace,
+    /// not the command. The noad is allocated BEFORE its field is scanned, so the
+    /// live `src_user_cmd_span` is exactly the command the user typed (no inner
+    /// construct lexed yet). Pull the START left to it (same source, only leftward),
+    /// keeping the end; the matching `src_construct_extend_to_loc` then grows the end
+    /// past the field. Uniform: every mark-synthesizing construct primitive, by
+    /// closure -- no per-construct code, no heuristic (the command<->noad link is
+    /// the tracked user-command register, not source adjacency).
+    pub(crate) unsafe fn src_construct_anchor(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        let noad = engine.state.curlist.tailfield as i32;
+        if noad < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(noad as usize);
+        if id == 0 {
+            return;
+        }
+        let Some(raw) = engine.state.src_spans.get((id - 1) as usize).copied() else {
+            return;
+        };
+        // Prefer the replay-aware anchor command (set while a NESTED construct was
+        // replayed from a token list); fall back to the buffer user command ONLY when
+        // the anchor is absent or from a different source. `src_anchor_cmd` is reset
+        // on every buffer read, so it never leaks across sibling constructs.
+        //
+        // The anchor and the fallback are NOT interchangeable candidates to pick
+        // whichever "wins" a leftward-pull check: a valid, same-source anchor means
+        // this noad IS the replayed nested construct, so the buffer user command (the
+        // OUTER construct enclosing the replay, e.g. Cardano's outer `\sqrt[3]{..}`)
+        // must never be consulted for it -- not even as a fallback -- regardless of
+        // whether the anchor itself happens to already equal the noad's own start (no
+        // pull needed: the noad is already correctly anchored to itself, not to the
+        // buffer command of note). Only ever pulls the START leftward.
+        let anchor = (engine.state.src_anchor_cmd != 0)
+            .then(|| engine.state.src_spans.get((engine.state.src_anchor_cmd - 1) as usize).copied())
+            .flatten()
+            .filter(|u| u.name == raw.name);
+        let chosen = match anchor {
+            Some(u) => {
+                if u.start < raw.start {
+                    Some(u)
+                } else {
+                    None
+                }
+            }
+            None => (engine.state.src_user_cmd_span != 0)
+                .then(|| engine.state.src_spans.get((engine.state.src_user_cmd_span - 1) as usize).copied())
+                .flatten()
+                .filter(|u| u.name == raw.name && u.start < raw.start),
+        };
+        let Some(u) = chosen else {
+            return;
+        };
+        let newid = engine.intern_span_raw(raw.name, u.start, raw.end, raw.role);
+        engine.state.node_src.set(noad as usize, newid);
+    }
+
+    /// HOOK (`handle_right_brace` math-group close, after the nucleus field is
+    /// filled): the spec's "extend to loc at noad commit" half of the construct
+    /// rule. A construct primitive (`\radical`, `\mathaccent`, hence `\sqrt{y}`,
+    /// `\hat{x}`, bare `\radical..{y}`) scans its nucleus `{..}` AFTER its command:
+    /// `scan_math` RETURNS at the opening `{` and the field is filled only when the
+    /// group closes here, so the noad stamped at allocation covers only the command.
+    /// Extend the construct noad's source END to the post-`}` buffer loc, giving the
+    /// surd/vinculum/accent the FULL `cmd{..}` extent. The START (the latched
+    /// command) is kept, so this is pure right-extension; the nucleus field span is
+    /// never touched, so the radicand glyph keeps its own char. A token-list-replayed
+    /// nucleus (a NESTED `\sqrt{..}`'s radicand inside a degree-form outer) has a mem-ptr
+    /// loc, so the end comes from the just-closed `}` token's own span instead of the
+    /// buffer loc. Uniform across every construct whose nucleus is its `+1` field, by
+    /// closure -- no per-construct code.
+    pub(crate) unsafe fn src_construct_extend_to_loc(engine: *mut Self) {
+        let e = match engine.as_ref() {
+            Some(e) => e,
+            None => return,
+        };
+        if !e.state.source_tracking {
+            return;
+        }
+        // Only the construct's OWN nucleus (its `+1` field): a sub/superscript field
+        // (`+2`/`+3`) closing must not extend the base atom.
+        let field = (*e
+            .state
+            .savestack
+            .offset((e.state.saveptr as i32 + 0 as i32) as isize))
+            .u
+            .CINT;
+        let noad = e.state.curlist.tailfield as i32;
+        let grp = e.state.src_grp_closing;
+        if noad < 0 || field != noad + 1 {
+            return;
+        }
+        Self::src_construct_extent(engine, noad, grp);
+    }
+
+    /// THE general construct-extent rule (replaces the per-construct delimiter/accent/
+    /// nucleus extenders). Map a construct noad's SYNTHESIZED marks (radical surd +
+    /// vinculum, fraction bar/delimiters, accent glyph, `\left/\right` delimiters) to the
+    /// construct's full CONSUMED-SOURCE extent `[min(noad command start, group open),
+    /// consumed end]`:
+    /// - `group_open` = the opening-token span of the construct's group (`{` of a
+    ///   `scan_math` field / bare math group, or `\left`), from `src_grp_stack`. `min`
+    ///   keeps a PREFIX command's earlier start (`\sqrt{x}` -> `\sqrt`) and pulls an
+    ///   ENCLOSING group's start to the bracket (`\left(..\right)`, `{n\choose k}`). `0`
+    ///   means no group (END-only: an unbraced `\dot q`).
+    /// - END = the live post-close buffer loc, or, when the close is replayed from a token
+    ///   list (a nested construct), the just-closed token's OWN interned span end.
+    /// Pure extension of `node_src[noad]`; the nucleus FIELD / leaf spans are never
+    /// touched, so content chars keep their own origin. One rule, no per-construct code.
+    pub(crate) unsafe fn src_construct_extent(engine: *mut Self, noad: halfword, group_open: SrcId) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking || noad < 0 {
+            return;
+        }
+        let id = engine.state.node_src.get_copy(noad as usize);
+        if id == 0 {
+            return;
+        }
+        let Some(raw) = engine.state.src_spans.get((id - 1) as usize).copied() else {
+            return;
+        };
+        let (end, name) = if engine.state.curinput.statefield as i32 != 0 {
+            (
+                engine.src_buf_offset(engine.state.curinput.locfield as integer),
+                engine.state.curinput.namefield as strnumber,
+            )
+        } else {
+            let sid = engine.state.curinput.spanfield;
+            if sid == 0 {
+                return;
+            }
+            let Some(braw) = engine.state.src_spans.get((sid - 1) as usize).copied() else {
+                return;
+            };
+            (braw.end, braw.name)
+        };
+        if raw.name != name {
+            return;
+        }
+        let end = end.max(raw.end);
+        let mut start = raw.start;
+        if group_open != 0 {
+            if let Some(g) = engine.state.src_spans.get((group_open - 1) as usize).copied() {
+                if g.name == name && g.start < start {
+                    start = g.start;
+                }
+            }
+        }
+        if start == raw.start && end == raw.end {
+            return;
+        }
+        let newid = engine.intern_span_raw(name, start, end, raw.role);
+        engine.state.node_src.set(noad as usize, newid);
+    }
+
+    /// HOOK (`math_left_right`, after `scan_delimiter`): drive the GENERAL extent for a
+    /// `\left..\right` group, which is NOT a `scan_math` `{}` field so does not pass
+    /// through `src_scan_math_group_*`. `\left` (t==30) pushes its command span as the
+    /// group open; `\right` (t==31) pops it and applies `src_construct_extent` to the
+    /// right delimiter noad `p` (from which `make_left_right` builds BOTH delimiter
+    /// glyphs), giving them the whole `[\left, )]` extent through the same one rule.
+    pub(crate) unsafe fn src_leftright(engine: *mut Self, p: halfword, t: integer) {
+        let Some(eng) = engine.as_mut() else {
+            return;
+        };
+        if !eng.state.source_tracking {
+            return;
+        }
+        if t == 30 as i32 {
+            let cmd = eng.state.cmd_span;
+            eng.state.src_grp_stack.push(cmd);
+        } else if t == 31 as i32 {
+            let open = eng.state.src_grp_stack.pop().unwrap_or(0);
+            Self::src_construct_extent(engine, p, open);
+        }
+    }
+
+    /// Resolve a node's enclosing-construct chain (innermost first) to display
+    /// spans, gated to the node's own source and to frames that strictly enclose
+    /// the node's primary range (a real enclosing construct contains the node),
+    /// with consecutive duplicates and the primary-equal innermost frame dropped.
+    /// `&self`: safe on the read-only IR snapshot path. Empty when tracking off.
+    /// Consumed by the IR builder to emit role-tagged EnclosingConstruct entries.
+    pub fn node_enclosing_spans(&self, handle: PortableNodeHandle) -> Vec<PortableSourceSpan> {
+        let node = handle.0 as halfword;
+        let mut out: Vec<PortableSourceSpan> = Vec::new();
+        if !self.state.source_tracking || node < 0 {
+            return out;
+        }
+        let primary = self.resolve_node_src(node);
+        let mut head = self.state.node_stack.get_copy(node as usize);
+        let mut guard = 0u32;
+        while head != 0 {
+            guard += 1;
+            if guard > 4096 {
+                break;
+            }
+            let Some(cell) = self.state.src_stack_cells.get((head - 1) as usize) else {
+                break;
+            };
+            let parent = cell.parent;
+            let span_id = cell.span;
+            head = parent;
+            if span_id == 0 {
+                continue;
+            }
+            let Some(raw) = self.state.src_spans.get((span_id - 1) as usize) else {
+                continue;
+            };
+            let Some(name) = (unsafe { self.pool_string(raw.name) }) else {
+                continue;
+            };
+            if let Some(p) = primary.as_ref() {
+                // Same-source + containment: an enclosing construct's range must
+                // contain the node's primary range; drop the frame equal to it.
+                if name != p.name || raw.start > p.start || raw.end < p.end {
+                    continue;
+                }
+                if raw.start == p.start && raw.end == p.end {
+                    continue;
+                }
+            }
+            if let Some(last) = out.last() {
+                if last.name == name && last.start == raw.start && last.end == raw.end {
+                    continue;
+                }
+            }
+            out.push(PortableSourceSpan {
+                name,
+                start: raw.start,
+                end: raw.end,
+                role: 1,
+            });
+        }
+        out
+    }
+
+    /// HOOK 8 (`begin_token_list`, after the input-stack push): set the new
+    /// level's BASELINE. A macro body (`t == macro`) adopts the call-site span
+    /// captured at `macro_call`; every other level keeps the parent's span (the
+    /// generated push already copied it into `curinput`, so that is free).
+    pub(crate) unsafe fn src_begin_token_list(engine: *mut Self, t: quarterword) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        // `macro` token type is 6 in this build's (XeTeX) numbering.
+        if t as i32 == 6 {
+            let call = engine.state.pending_call_span;
+            if call != 0 {
+                engine.state.curinput.spanfield = call;
+            }
+            engine.state.pending_call_span = 0;
+            // HOOK 8a: push this macro invocation as an enclosing-construct frame
+            // (popped at the matching end_token_list, HOOK 8b). Nodes the body
+            // allocates record it on `node_stack`.
+            engine.src_stack_push_span(call);
+        }
+    }
+
+    /// HOOK 12a (`\let`/`\futurelet` 2-token look-ahead, `prefixed_command`
+    /// case `let` with `n != normal`, right after `q := cur_tok`): capture
+    /// token A's (the first peeked token, held in `q`) OWN origin, frozen in
+    /// `src_tok_span` by the `get_token` that just read it.
+    ///
+    /// tex.web: `get_token; q:=cur_tok; get_token; back_input; cur_tok:=q;
+    /// back_input;`. The SECOND `get_token` (reading token B) overwrites
+    /// `src_tok_span` with B's own origin; `q := cur_tok`/`cur_tok := q` are
+    /// plain register copies that never re-freeze it. So without this capture
+    /// (paired with [`Self::src_restore_tok_span`] right before the SECOND
+    /// `back_input`), that `back_input` -- which re-emits token A -- fires
+    /// with `src_tok_span` still pointing at B, stamping A's backed-up cell
+    /// with B's origin instead of its own. `\@ifnextchar` (built on
+    /// `\futurelet`) hits this in `\@tabularcr`'s `array`/`tabular`
+    /// row-boundary check and in `\sqrt`'s degree scan, where token A is the
+    /// token right after the command (e.g. the `{` of a degree-less
+    /// `\sqrt{..}`) and B is unrelated look-ahead content.
+    pub(crate) unsafe fn src_capture_tok_span(engine: *mut Self) -> u32 {
+        engine.as_ref().map_or(0, |engine| engine.state.src_tok_span)
+    }
+
+    /// HOOK 12b: the restore half of [`Self::src_capture_tok_span`].
+    pub(crate) unsafe fn src_restore_tok_span(engine: *mut Self, saved: u32) {
+        if let Some(engine) = engine.as_mut() {
+            if engine.state.source_tracking {
+                engine.state.src_tok_span = saved;
+            }
+        }
+    }
+
+    /// HOOK 9a (`macro_call` entry): stash the invoking control sequence's
+    /// origin so [`Self::src_macro_set_pending`] can build the whole-invocation
+    /// span after the arguments are scanned.
+    pub(crate) unsafe fn src_macro_begin(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        let span = engine.state.curinput.spanfield;
+        engine.state.src_call_span = span;
+        engine.state.src_call_state = engine.state.curinput.statefield as integer;
+        engine.state.src_call_index = engine.state.curinput.indexfield as integer;
+        engine.state.src_call_name = engine.state.curinput.namefield as strnumber;
+        engine.state.src_call_argspan = 0;
+        // Capture the enclosing user command NOW (before this macro reads its
+        // arguments, so a construct lexed while scanning the args does not become
+        // the anchor). The buffer-branch baseline anchors its START here.
+        engine.state.src_call_user_span = engine.state.src_user_cmd_span;
+        engine.state.src_call_start = if span != 0 {
+            engine
+                .state
+                .src_spans
+                .get((span - 1) as usize)
+                .map(|s| s.start)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        // A macro whose cs was REPLAYED at PARAMETER level (`state == 0 && index < 3`,
+        // span in the user fragment) is genuinely user-typed ARGUMENT content — e.g. a
+        // nested `\sqrt{..}` replayed inside a degree-form radicand. Record it as the
+        // anchor command (consumed ONLY by `src_construct_anchor`, never the arg-hull).
+        // The gate is `< 3` (parameter/template levels) rather than `< 5`
+        // (backed_up/inserted too): this hook only needs to see the macro CALL itself
+        // (e.g. the inner `\sqrt`), which is read at parameter level; widening it to
+        // also match backed_up/inserted reads (e.g. a `\futurelet`-peeked helper token)
+        // would let unrelated look-ahead plumbing overwrite a real anchor. Macro BODIES
+        // (index 6) are excluded for the usual definition-vs-invocation-site reason.
+        if engine.state.src_call_state == 0 && engine.state.src_call_index < 3 && span != 0 {
+            if let Some(raw) = engine.state.src_spans.get((span - 1) as usize).copied() {
+                if raw.name == engine.state.src_primary_name {
+                    engine.state.src_anchor_cmd = span;
+                }
+            }
+        }
+    }
+
+    /// Convex hull (same source) of the invoking cs token span (`src_call_span`),
+    /// the scanned argument token spans (`pstack[0..n]`, each a token list walked to
+    /// its end), and the last consumed argument span (`src_call_argspan`, the final
+    /// `}`). Returns the interned role-1 hull, or `0` if nothing was found. This is
+    /// the `\frac{q}{2}` -> "\frac{q}{2}" recovery for a token-list-replayed macro,
+    /// gated to the cs token's OWN source (not the replay level's `namefield`).
+    unsafe fn src_arg_hull(self: &mut Self, n: integer) -> SrcId {
+        let mut lo = u32::MAX;
+        let mut hi = 0u32;
+        let mut found = false;
+        let mut name: strnumber = self.state.src_primary_name;
+        if self.state.src_call_span != 0 {
+            if let Some(raw) = self
+                .state
+                .src_spans
+                .get((self.state.src_call_span - 1) as usize)
+            {
+                name = raw.name;
+                lo = raw.start;
+                hi = raw.end;
+                found = true;
+            }
+        }
+        // Forward-only gate: when seeded from a known command span, only union args
+        // that fall AT OR AFTER the command start (the macro's own `cmd{..}` region).
+        // This keeps `\def\foo{\frac{1}{2}}\foo` mapping its bar to "\foo": the inner
+        // `\frac`'s args sit at the `\def` site, BEFORE the `\foo` invocation the bar
+        // inherited, so they are excluded rather than merged into a span straddling
+        // the definition and the call. When there is no command span (a library
+        // helper), the gate is open (`0`) and the first arg seeds the hull.
+        let cmd_start = if found { lo } else { 0 };
+        let zmem = self.state.zmem;
+        let lo_b = self.state.memmin;
+        let hi_b = self.state.memmax;
+        for i in 0..n.max(0) {
+            let mut p = self.state.pstack[i as usize];
+            let mut guard = 0i32;
+            while p >= lo_b && p <= hi_b && p as i64 != -(268435455 as i64) {
+                guard += 1;
+                if guard > 100000 {
+                    break;
+                }
+                let id = self.state.node_src.get_copy(p as usize);
+                if id != 0 {
+                    if let Some(raw) = self.state.src_spans.get((id - 1) as usize) {
+                        if raw.name == name && raw.start >= cmd_start {
+                            if found {
+                                lo = lo.min(raw.start);
+                                hi = hi.max(raw.end);
+                            } else {
+                                lo = raw.start;
+                                hi = raw.end;
+                                found = true;
+                            }
+                        }
+                    }
+                }
+                p = (*zmem.offset(p as isize)).hh.v.RH;
+            }
+        }
+        // Extend to the last consumed argument token (the closing `}` of the final
+        // brace group) so the construct includes its trailing delimiter. Two tracked
+        // sources: `src_call_argspan` (captured at the first `end_token_list` pop)
+        // and the live `curinput.spanfield` (the last token read while matching the
+        // args). The latter recovers the trailing `}` for a `\mathchoice`-replayed
+        // robust `\frac␣` where the pop-order leaves `src_call_argspan` stale.
+        for cand in [self.state.src_call_argspan, self.state.curinput.spanfield] {
+            if cand == 0 {
+                continue;
+            }
+            if let Some(raw) = self.state.src_spans.get((cand - 1) as usize) {
+                if raw.name == name && raw.start >= cmd_start {
+                    if found {
+                        lo = lo.min(raw.start);
+                        hi = hi.max(raw.end);
+                    } else {
+                        lo = raw.start;
+                        hi = raw.end;
+                        found = true;
+                    }
+                }
+            }
+        }
+        if found && hi > lo {
+            self.intern_span_raw(name, lo, hi, 1)
+        } else {
+            0
+        }
+    }
+
+    /// HOOK 9b (`macro_call`, right before the body `begin_token_list`): publish
+    /// the call-site span the body level will inherit, LEVEL-TYPED by where the
+    /// invoking control sequence was read from (captured at `src_macro_begin`,
+    /// before the exhausted-list pop loop perturbs `curinput`):
+    ///
+    /// * Genuine macro ARGUMENT replay (entry token type `parameter` = 0, e.g. a
+    ///   `\frac{q}{2}` typed inside another macro's `{...}` or replayed by
+    ///   `\mathchoice`): the buffer `loc` has popped past this invocation, so its
+    ///   `[cs,loc)` would overshoot into the enclosing macro. Recover the extent as
+    ///   the same-source convex hull of the cs token and the scanned argument token
+    ///   spans (`pstack[0..n]`) -> the user's own `\frac{q}{2}`, not `\frac`.
+    /// * Otherwise CURRENT buffer (`statefield != 0`, the common direct call and the
+    ///   backed-up math-probe whose args were scanned from the buffer): the whole
+    ///   `[cs_start, loc)` invocation (loc past the args) -> `\frac{a}{b}`.
+    /// * Otherwise a still-live token list (a macro body / every-list): the
+    ///   inherited baseline, so body-internal calls collapse to the outer
+    ///   invocation (`\def\foo{\frac..}\foo` -> `\foo`).
+    pub(crate) unsafe fn src_macro_set_pending(engine: *mut Self, n: integer) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        if engine.state.src_call_index == 0 && engine.state.src_call_span == 0 {
+            // A LIBRARY HELPER macro -- one with no in-fragment cs span, e.g. `\@sqrt`
+            // invoked by `\sqrt`, or `\root`/`\mathchoice` machinery -- is NOT a user
+            // construct. Its in-fragment ARGUMENTS (`[3]{x}`) are the OUTER command's
+            // args, not a new construct boundary. So it must NOT establish a new
+            // baseline from those args (which is why the surd was landing on `[3]{x}`);
+            // inherit the parent baseline (the transitively-propagated user command,
+            // e.g. `\sqrt`) by leaving the level to inherit on push. The arg CONTENT
+            // (3, x) still keeps its own cell spans. Only a USER macro (in-fragment cs,
+            // handled below) defines its own `[cs..args]` hull.
+            engine.state.pending_call_span = 0;
+        } else if engine.state.src_call_index == 0 {
+            // ARGUMENT / backed-up replay (`\frac{q}{2}` typed inside another macro's
+            // `{..}`): recover its own `[cs..args]` hull from the scanned args.
+            let hull = engine.src_arg_hull(n);
+            engine.state.pending_call_span = if hull != 0 {
+                hull
+            } else {
+                engine.state.src_call_span
+            };
+        } else if engine.state.curinput.statefield as i32 != 0 {
+            // BUFFER invocation: the whole `[cmd_start, loc)` extent (loc is past the
+            // args). Anchor the START to the ENCLOSING USER COMMAND (captured at
+            // `src_macro_begin`), not this macro's own `src_call_span`: a kernel
+            // helper reached through a user command's expansion (e.g. `\@sqrt`,
+            // `\root`, `\mathpalette` for `\sqrt[3]{x}`) is invoked from the buffer
+            // with a borrowed cs span (the `\@ifnextchar` peeked `[`), which would
+            // drop the `\sqrt` origin. The user command's start transitively anchors
+            // every helper to the command the user typed. For a directly-typed user
+            // macro the user command IS this macro, so the start is unchanged.
+            let end = engine.src_buf_offset(engine.state.curinput.locfield as integer);
+            let name = engine.state.curinput.namefield as strnumber;
+            let mut start = engine.state.src_call_start.min(end);
+            let user = engine.state.src_call_user_span;
+            if user != 0 {
+                if let Some(raw) = engine.state.src_spans.get((user - 1) as usize) {
+                    if raw.name == name && raw.start <= start {
+                        start = raw.start;
+                    }
+                }
+            }
+            let id = engine.intern_span_raw(name, start, end, 1);
+            engine.state.pending_call_span = id;
+        } else if n > 0 {
+            // TOKEN-LIST macro BODY (`index >= 5`) that consumed args. The inherited
+            // baseline is the user invocation that produced this body (`\frac` ->
+            // `\protect\frac␣`: `\frac␣`'s baseline is the user's `\frac`). UNION it
+            // with the macro's OWN trailing args so a `\frac{q}{2}` the user typed as
+            // a `\mathchoice`-replayed radicand recovers "\frac{q}{2}". `src_arg_hull`
+            // only unions args that fall AFTER the command start (the macro's own
+            // `cmd{..}` region), so a `\def\foo{\frac{1}{2}}\foo` body -- whose inner
+            // `\frac` args precede the `\foo` invocation -- excludes them and keeps
+            // the bar -> "\foo". The join is the command and its OWN tracked args
+            // (the macro-call chain), never an unrelated adjacent range.
+            let hull = engine.src_arg_hull(n);
+            engine.state.pending_call_span = if hull != 0 {
+                hull
+            } else {
+                engine.state.src_call_span
+            };
+        } else {
+            engine.state.pending_call_span = engine.state.src_call_span;
+        }
+    }
+
+    /// HOOK 11 (`main_control` main loop, the `is_hyph` seam): record the source
+    /// span of the input char just appended to `nativetext`, one entry per UTF-16
+    /// code unit (a surrogate-pair char fills both units with the same id). This
+    /// runs once per collected char while `curinput.spanfield` still points at it.
+    /// The run begins when `nativelen` was 0 before this char (`prev == 0`), so the
+    /// table self-resets at the head of each run without a second anchor; a later
+    /// re-measure of an unrelated run is caught by the length guard in
+    /// [`Self::src_resolve_native_glyphs`]. No-op when tracking off.
+    pub(crate) unsafe fn src_native_run_push(engine: *mut Self) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        let nativelen = engine.state.nativelen.max(0) as usize;
+        // The engine appends 2 UTF-16 units for a supplementary scalar, else 1
+        // (mirrors the `curchr > 65535` branch just above this seam).
+        let units = if engine.state.curchr as i64 > 65535 { 2 } else { 1 };
+        let prev = nativelen.saturating_sub(units);
+        if prev == 0 {
+            engine.state.src_native_offsets.clear();
+        }
+        // Trim any stale overshoot (defensive; cleared at `prev == 0`), then fill
+        // this char's units with its tracked span id.
+        if engine.state.src_native_offsets.len() > prev {
+            engine.state.src_native_offsets.truncate(prev);
+        }
+        let id = engine.state.curinput.spanfield;
+        while engine.state.src_native_offsets.len() < nativelen {
+            engine.state.src_native_offsets.push(id);
+        }
+    }
+
+    /// Map each shaped glyph of a native run to the EXACT source span of the input
+    /// char(s) under its shaper cluster, setting `src_start`/`src_end` (in the
+    /// node's `primary_source.source` coordinates). The shaper reports each glyph's
+    /// `cluster_start` as a UTF-8 BYTE offset into `String::from_utf16_lossy(text)`
+    /// (the engine hands the shaper UTF-16 `nativetext`, the adapter converts to a
+    /// Rust `&str`, and rustybuzz clusters are UTF-8 byte indices). This rebuilds
+    /// that string, maps each UTF-8 byte to its char's tracked span via a UTF-16
+    /// code-unit cursor aligned with `src_native_offsets`, then for each glyph
+    /// unions the (same-source) spans across its cluster's byte extent — the extent
+    /// being `[cluster_start, next distinct cluster_start)`, so a ligature glyph
+    /// covers the contiguous union of its source chars. CONSUME-ONCE: the offsets
+    /// table is taken here, so a re-measure (reconstituted/hyphenated run, or an
+    /// unrelated node) finds it empty and leaves clusters unmapped rather than
+    /// mis-mapping. Zero heuristics: no text==source linear assumption — every span
+    /// comes from a per-char tracked id. No-op when tracking off.
+    pub(crate) unsafe fn src_resolve_native_glyphs(
+        engine: *mut Self,
+        node: halfword,
+        text: &[u16],
+        glyphs: &mut [PortableNativeGlyph],
+    ) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        if !engine.state.source_tracking {
+            return;
+        }
+        let offsets = core::mem::take(&mut engine.state.src_native_offsets);
+        // Only resolve our freshly-collected run: the per-code-unit table must
+        // exactly cover this node's text. Any mismatch => leave glyphs unmapped.
+        if text.is_empty() || offsets.len() != text.len() {
+            return;
+        }
+        if node < 0 {
+            return;
+        }
+        // The cluster span lives in the node's source coordinates, so only chars
+        // from the node's own source file may contribute (no cross-source span).
+        let node_id = engine.state.node_src.get_copy(node as usize);
+        if node_id == 0 {
+            return;
+        }
+        let node_name = match engine.state.src_spans.get((node_id - 1) as usize) {
+            Some(raw) => raw.name,
+            None => return,
+        };
+        // Rebuild the exact UTF-8 string the shaper saw and tag each byte with the
+        // source id of the char it belongs to (UTF-16 cursor aligns to `offsets`).
+        // The shaper reports `cluster_start` as a UTF-8 BYTE offset into this
+        // string (verified empirically: a supplementary-plane run char lands its
+        // following glyph at the UTF-8 byte offset, not the UTF-16 code-unit one).
+        let s = String::from_utf16_lossy(text);
+        let n = s.len();
+        let mut byte_src = vec![0u32; n];
+        let mut u16i = 0usize;
+        for (b, ch) in s.char_indices() {
+            let id = offsets.get(u16i).copied().unwrap_or(0);
+            let upper = (b + ch.len_utf8()).min(n);
+            for slot in byte_src.iter_mut().take(upper).skip(b) {
+                *slot = id;
+            }
+            u16i += ch.len_utf16();
+        }
+        for gi in 0..glyphs.len() {
+            let cs = (glyphs[gi].cluster_start as usize).min(n);
+            // Monotone (LTR) clusters: this cluster ends at the next strictly
+            // greater `cluster_start`, else at end-of-text. Glyphs sharing `cs`
+            // (a decomposed char) resolve to the same char span.
+            let mut ce = n;
+            for g2 in glyphs.iter() {
+                let c2 = (g2.cluster_start as usize).min(n);
+                if c2 > cs && c2 < ce {
+                    ce = c2;
+                }
+            }
+            let mut lo = u32::MAX;
+            let mut hi = 0u32;
+            let mut found = false;
+            for &id in byte_src.iter().take(ce).skip(cs) {
+                if id == 0 {
+                    continue;
+                }
+                let Some(raw) = engine.state.src_spans.get((id - 1) as usize) else {
+                    continue;
+                };
+                if raw.name != node_name {
+                    continue;
+                }
+                lo = lo.min(raw.start);
+                hi = hi.max(raw.end);
+                found = true;
+            }
+            if found && hi > lo {
+                glyphs[gi].src_start = lo;
+                glyphs[gi].src_end = hi;
+            }
+        }
+    }
+
+    /// All interned spans, resolved to display form. Restored from the stubbed
+    /// `&[]`: exposes the populated table for inspection / tests.
+    pub fn input_source_spans(&self) -> Vec<PortableSourceSpan> {
+        self.state
+            .src_spans
+            .iter()
+            .filter_map(|raw| {
+                let name = unsafe { self.pool_string(raw.name) }?;
+                Some(PortableSourceSpan {
+                    name,
+                    start: raw.start,
+                    end: raw.end,
+                    role: raw.role,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) unsafe fn resolve_font_handle(
+        engine: *mut PortableTexEngine<'_>,
+        name: *mut ASCIIcode,
+        size: integer,
+    ) -> FontHandle {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let name_len = engine.state.namelength.max(0) as usize;
+        let name = if name.is_null() || name_len == 0 {
+            &[]
+        } else {
+            core::slice::from_raw_parts(name as *const i32, name_len)
+        };
+        engine.fonts.resolve_font_handle(name, size).unwrap_or(0)
+    }
+
+    pub(crate) unsafe fn measure_font_metrics(
+        engine: *mut PortableTexEngine<'_>,
+        font: FontHandle,
+        ascent: *mut integer,
+        descent: *mut integer,
+        xheight: *mut integer,
+        capheight: *mut integer,
+        slant: *mut integer,
+    ) {
+        let metrics = engine
+            .as_mut()
+            .map(|engine| engine.fonts.font_metrics(font))
+            .unwrap_or_default();
+        if !ascent.is_null() {
+            *ascent = metrics.ascent;
+        }
+        if !descent.is_null() {
+            *descent = metrics.descent;
+        }
+        if !xheight.is_null() {
+            *xheight = metrics.xheight;
+        }
+        if !capheight.is_null() {
+            *capheight = metrics.capheight;
+        }
+        if !slant.is_null() {
+            *slant = metrics.slant;
+        }
+    }
+
+    pub(crate) unsafe fn get_native_mathsy_parameter(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+        param: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine.fonts.math_symbol_parameter(font_handle, param)
+    }
+
+    pub(crate) unsafe fn get_native_mathex_parameter(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+        param: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine.fonts.math_extension_parameter(font_handle, param)
+    }
+
+    /// Italic correction for a native OpenType-math glyph, in scaled points.
+    ///
+    /// Mirrors XeTeX's `get_ot_math_ital_corr` (`XeTeXOTMath.cpp`): it reads the
+    /// glyph's `MathItalicsCorrectionInfo` value and scales it through the same
+    /// `unitsToPoints` + `D2Fix` path as every other font metric. The math list
+    /// builder (`mlist_to_hlist`) appends a `\kern` of this size after an ord
+    /// glyph when there is no following subscript, so a correct nonzero value
+    /// produces the exact italic-correction kern real XeTeX emits.
+    pub(crate) unsafe fn get_ot_math_ital_corr(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+        glyph: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine.fonts.math_glyph_italic_correction(font_handle, glyph)
+    }
+
+    /// The `v`-th larger MATH glyph variant of `g` (horizontal or vertical),
+    /// writing its scaled advance to `*adv`. Mirrors XeTeX's
+    /// `get_ot_math_variant`: returns the glyph unchanged with `*adv = -1` when
+    /// there is no such variant.
+    pub(crate) unsafe fn get_ot_math_variant(
+        engine: *mut PortableTexEngine<'resources>,
+        f_0: integer,
+        g_0: integer,
+        v: integer,
+        adv: *mut integer,
+        horiz: integer,
+    ) -> integer {
+        if !adv.is_null() {
+            *adv = -1;
+        }
+        let Some(engine) = engine.as_mut() else {
+            return g_0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return g_0;
+        };
+        let index = u16::try_from(v).unwrap_or(u16::MAX);
+        match engine
+            .fonts
+            .math_glyph_variant(font_handle, g_0, index, horiz != 0)
+        {
+            Some(variant) => {
+                if !adv.is_null() {
+                    *adv = variant.advance;
+                }
+                variant.glyph
+            }
+            None => g_0,
+        }
+    }
+
+    /// Build a heap-owned [`GlyphAssembly`] for the stretchable glyph `g` and
+    /// hand ownership to the engine as a `void*` (reclaimed by
+    /// [`free_ot_assembly`]). Returns null when there is no assembly. Mirrors
+    /// XeTeX's `get_ot_assembly_ptr`, but allocates a safe Rust struct with
+    /// `Box::into_raw` instead of a libc C struct.
+    pub(crate) unsafe fn get_ot_assembly_ptr(
+        engine: *mut PortableTexEngine<'resources>,
+        f_0: integer,
+        g_0: integer,
+        horiz: integer,
+    ) -> voidpointer {
+        let Some(engine) = engine.as_mut() else {
+            return nullptr;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return nullptr;
+        };
+        let parts = engine
+            .fonts
+            .math_glyph_assembly(font_handle, g_0, horiz != 0);
+        if parts.is_empty() {
+            return nullptr;
+        }
+        let assembly = Box::new(GlyphAssembly { parts });
+        Box::into_raw(assembly) as voidpointer
+    }
+
+    /// Minimum connector overlap between assembly parts for font `f`, in scaled
+    /// points (`ot_min_connector_overlap`).
+    pub(crate) unsafe fn ot_min_connector_overlap(
+        engine: *mut PortableTexEngine<'resources>,
+        f_0: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return 0;
+        };
+        engine.fonts.math_min_connector_overlap(font_handle)
+    }
+
+    /// MATH glyph height (scaled points) via the font platform.
+    unsafe fn math_glyph_height(
+        engine: &mut PortableTexEngine<'resources>,
+        f_0: integer,
+        g_0: integer,
+    ) -> scaled {
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return 0;
+        };
+        let Ok(glyph) = u16::try_from(g_0) else {
+            return 0;
+        };
+        engine.fonts.measure_native_glyph(font_handle, glyph, true).height
+    }
+
+    /// MATH glyph depth (scaled points) via the font platform.
+    unsafe fn math_glyph_depth(
+        engine: &mut PortableTexEngine<'resources>,
+        f_0: integer,
+        g_0: integer,
+    ) -> scaled {
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return 0;
+        };
+        let Ok(glyph) = u16::try_from(g_0) else {
+            return 0;
+        };
+        engine.fonts.measure_native_glyph(font_handle, glyph, true).depth
+    }
+
+    /// Evaluate one MATH kern corner of glyph `g` at `correction_height` (font
+    /// design units), in raw font units, via the font platform.
+    unsafe fn math_kern_at(
+        engine: &mut PortableTexEngine<'resources>,
+        f_0: integer,
+        g_0: integer,
+        height: integer,
+        corner: PortableMathKernCorner,
+    ) -> integer {
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return 0;
+        };
+        engine.fonts.math_kern_at(font_handle, g_0, corner, height)
+    }
+
+    /// Superscript/subscript cut-in kerning between base glyph `g` in font `f`
+    /// and script glyph `sg` in font `sf`. Faithful port of XeTeX's
+    /// `get_ot_math_kern` (`XeTeXOTMath.cpp`): all intermediate arithmetic runs
+    /// in base-glyph units with a `scale_factor = sf_size / f_size`, the "max not
+    /// min" corner choice is preserved, and the result is scaled to scaled points
+    /// through the same `unitsToPoints` + `D2Fix` path.
+    pub(crate) unsafe fn get_ot_math_kern(
+        engine: *mut PortableTexEngine<'resources>,
+        f_0: integer,
+        g_0: integer,
+        sf: integer,
+        sg: integer,
+        cmd: integer,
+        shift_scaled: integer,
+    ) -> integer {
+        const SUP_CMD: integer = 0;
+        const SUB_CMD: integer = 1;
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, f_0) else {
+            return 0;
+        };
+        let Some(sfont_handle) = Self::font_handle_for_number(engine, sf) else {
+            return 0;
+        };
+
+        // Glyph height/depth in points (sp -> pt) for the base and script glyphs.
+        let g_height_pt = Self::math_glyph_height(engine, f_0, g_0) as f32 / 65536.0;
+        let g_depth_pt = Self::math_glyph_depth(engine, f_0, g_0) as f32 / 65536.0;
+        let sg_height_pt = Self::math_glyph_height(engine, sf, sg) as f32 / 65536.0;
+        let sg_depth_pt = Self::math_glyph_depth(engine, sf, sg) as f32 / 65536.0;
+
+        // Convert everything to base-glyph units.
+        let g_height = engine.fonts.math_points_to_units(font_handle, g_height_pt) as integer;
+        let g_depth = engine.fonts.math_points_to_units(font_handle, g_depth_pt) as integer;
+        let sg_height = engine
+            .fonts
+            .math_points_to_units(sfont_handle, sg_height_pt) as integer;
+        let sg_depth = engine
+            .fonts
+            .math_points_to_units(sfont_handle, sg_depth_pt) as integer;
+        let shift_pt = shift_scaled as f32 / 65536.0;
+        let shift = engine.fonts.math_points_to_units(font_handle, shift_pt) as integer;
+
+        let f_size = engine.fonts.math_point_size(font_handle);
+        let sf_size = engine.fonts.math_point_size(sfont_handle);
+        if f_size == 0.0 {
+            return 0;
+        }
+        let scale_factor = sf_size / f_size;
+
+        let mut rval: integer;
+        if cmd == SUP_CMD {
+            let kern = Self::math_kern_at(
+                engine,
+                f_0,
+                g_0,
+                shift - (scale_factor * sg_depth as f32) as integer,
+                PortableMathKernCorner::TopRight,
+            );
+            let skern =
+                Self::math_kern_at(engine, sf, sg, -sg_depth, PortableMathKernCorner::BottomLeft);
+            let top_kern = kern + (scale_factor * skern as f32) as integer;
+
+            let kern =
+                Self::math_kern_at(engine, f_0, g_0, g_height, PortableMathKernCorner::TopRight);
+            let skern = Self::math_kern_at(
+                engine,
+                sf,
+                sg,
+                ((g_height - shift) as f32 / scale_factor) as integer,
+                PortableMathKernCorner::BottomLeft,
+            );
+            let bot_kern = kern + (scale_factor * skern as f32) as integer;
+
+            rval = if top_kern > bot_kern { top_kern } else { bot_kern };
+        } else if cmd == SUB_CMD {
+            let kern = Self::math_kern_at(
+                engine,
+                f_0,
+                g_0,
+                (scale_factor * sg_height as f32) as integer - shift,
+                PortableMathKernCorner::BottomRight,
+            );
+            let skern =
+                Self::math_kern_at(engine, sf, sg, sg_height, PortableMathKernCorner::TopLeft);
+            let top_kern = kern + (scale_factor * skern as f32) as integer;
+
+            let kern =
+                Self::math_kern_at(engine, f_0, g_0, -g_depth, PortableMathKernCorner::BottomRight);
+            let skern = Self::math_kern_at(
+                engine,
+                sf,
+                sg,
+                ((shift - g_depth) as f32 / scale_factor) as integer,
+                PortableMathKernCorner::TopLeft,
+            );
+            let bot_kern = kern + (scale_factor * skern as f32) as integer;
+
+            rval = if top_kern > bot_kern { top_kern } else { bot_kern };
+        } else {
+            return 0;
+        }
+
+        rval = engine.fonts.math_units_to_scaled(font_handle, rval);
+        rval
+    }
+
+    pub(crate) unsafe fn get_native_word_cp(
+        engine: *mut PortableTexEngine<'resources>,
+        node: voidpointer,
+        side: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(node_index) = Self::node_index_for_pointer(engine, node) else {
+            return 0;
+        };
+        let Some(info) = engine.native_glyph_infos.get(&node_index) else {
+            return 0;
+        };
+        let glyph = if side == 0 {
+            info.glyphs.first()
+        } else {
+            info.glyphs.last()
+        };
+        let Some(glyph) = glyph else {
+            return 0;
+        };
+        let font = Self::native_node_font(engine.state.zmem, node_index);
+        Self::character_protrusion(engine, font, u32::from(glyph.glyph_id), side)
+    }
+
+    pub(crate) unsafe fn get_native_glyph(
+        engine: *mut PortableTexEngine<'resources>,
+        node: voidpointer,
+        index: u32,
+    ) -> uint16_t {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(node_index) = Self::node_index_for_pointer(engine, node) else {
+            return 0;
+        };
+        engine
+            .native_glyph_infos
+            .get(&node_index)
+            .and_then(|info| info.glyphs.get(index as usize))
+            .map_or(0, |glyph| glyph.glyph_id)
+    }
+
+    pub(crate) unsafe fn get_character_protrusion(
+        engine: *mut PortableTexEngine<'_>,
+        font: integer,
+        code: u32,
+        side: integer,
+    ) -> integer {
+        engine
+            .as_mut()
+            .map_or(0, |engine| Self::character_protrusion(engine, font, code, side))
+    }
+
+    pub(crate) fn character_protrusion(
+        engine: &PortableTexEngine<'_>,
+        font: integer,
+        code: u32,
+        side: integer,
+    ) -> integer {
+        engine
+            .character_protrusions
+            .get(&(font, code, side))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn set_character_protrusion(
+        engine: &mut PortableTexEngine<'_>,
+        font: integer,
+        code: u32,
+        side: integer,
+        value: integer,
+    ) {
+        let key = (font, code, side);
+        if value == 0 {
+            engine.character_protrusions.remove(&key);
+        } else {
+            engine.character_protrusions.insert(key, value);
+        }
+    }
+
+    pub(crate) unsafe fn get_opentype_math_constant(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+        constant: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine.fonts.opentype_math_constant(font_handle, constant)
+    }
+
+    pub(crate) unsafe fn get_opentype_math_accent_position(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+        glyph: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine.fonts.opentype_math_accent_position(font_handle, glyph)
+    }
+
+    pub(crate) unsafe fn map_char_to_glyph(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+        ch: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine.fonts.map_char_to_glyph(font_handle, ch)
+    }
+
+    pub(crate) unsafe fn map_glyph_to_index(
+        engine: *mut PortableTexEngine<'resources>,
+        font: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        let Some(name) = engine.pool_string(engine.state.curname) else {
+            return 0;
+        };
+        engine.fonts.map_glyph_to_index(font_handle, name.as_str())
+    }
+
+    /// Boundary for the `\XeTeXOT*` / `\XeTeXcountglyphs` `last_item` primitives.
+    /// Resolves the font number to a platform handle (mirroring
+    /// `map_char_to_glyph`) and dispatches to the font platform's OpenType
+    /// layout enumeration. Replaces the old `otfontget*` no-op stubs.
+    pub(crate) unsafe fn ot_font_get(
+        engine: *mut PortableTexEngine<'resources>,
+        what: integer,
+        font: integer,
+        param1: integer,
+        param2: integer,
+        param3: integer,
+    ) -> integer {
+        let Some(engine) = engine.as_mut() else {
+            return 0;
+        };
+        let Some(font_handle) = Self::font_handle_for_number(engine, font) else {
+            return 0;
+        };
+        engine
+            .fonts
+            .ot_font_get(font_handle, what, param1, param2, param3)
+    }
+
+    pub(crate) unsafe fn is_opentype_math_font(
+        engine: *mut PortableTexEngine<'_>,
+        font: FontHandle,
+    ) -> boolean {
+        engine
+            .as_mut()
+            .map(|engine| engine.fonts.is_opentype_math_font(font) as boolean)
+            .unwrap_or(false_0)
+    }
+
+    pub(crate) unsafe fn using_opentype(
+        engine: *mut PortableTexEngine<'_>,
+        font: FontHandle,
+    ) -> boolean {
+        engine
+            .as_mut()
+            .map(|engine| engine.fonts.using_opentype(font) as boolean)
+            .unwrap_or(false_0)
+    }
+
+    pub(crate) unsafe fn release_font_engine(
+        engine: *mut PortableTexEngine<'_>,
+        font: FontHandle,
+        type_flag: integer,
+    ) {
+        if let Some(engine) = engine.as_mut() {
+            engine.fonts.release_font_handle(font, type_flag);
+        }
+    }
+
+    pub(crate) unsafe fn measure_opentype_font_metrics(
+        engine: *mut PortableTexEngine<'_>,
+        font: FontHandle,
+        ascent: *mut integer,
+        descent: *mut integer,
+        xheight: *mut integer,
+        capheight: *mut integer,
+        slant: *mut integer,
+    ) {
+        let metrics = engine
+            .as_mut()
+            .map(|engine| engine.fonts.opentype_font_metrics(font))
+            .unwrap_or_default();
+        if !ascent.is_null() {
+            *ascent = metrics.ascent;
+        }
+        if !descent.is_null() {
+            *descent = metrics.descent;
+        }
+        if !xheight.is_null() {
+            *xheight = metrics.xheight;
+        }
+        if !capheight.is_null() {
+            *capheight = metrics.capheight;
+        }
+        if !slant.is_null() {
+            *slant = metrics.slant;
+        }
+    }
+
+    pub(crate) unsafe fn measure_native_node(
+        engine: *mut PortableTexEngine<'resources>,
+        node: voidpointer,
+        use_glyph_metrics: integer,
+    ) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        let Some(node_index) = Self::node_index_for_pointer(engine, node) else {
+            return;
+        };
+        let mem = engine.state.zmem;
+        let font_number = Self::native_node_font(mem, node_index);
+        let Some(font_handle) = Self::font_handle_for_number(engine, font_number) else {
+            return;
+        };
+        let text = Self::native_node_text(mem, node_index);
+        let mut metrics =
+            engine
+                .fonts
+                .shape_native_text(font_handle, text, use_glyph_metrics != 0);
+        // Source tracking: map each shaped glyph back to the EXACT source span of
+        // the input char(s) that produced its shaper cluster, via the per-code-unit
+        // ids collected during the main-loop run (no-op when tracking off).
+        Self::src_resolve_native_glyphs(
+            engine as *mut PortableTexEngine<'resources>,
+            node_index,
+            text,
+            metrics.glyphs.as_mut_slice(),
+        );
+        Self::write_native_node_metrics(
+            mem,
+            node_index,
+            metrics.width,
+            metrics.height,
+            metrics.depth,
+        );
+        (*mem.offset((node_index + 4) as isize)).v.QQQQ.u.B3 =
+            (metrics.glyphs.len().min(i32::MAX as usize) as quarterword) as u16;
+        (*mem.offset((node_index + 5) as isize)).ptr = nullptr;
+        engine.native_glyph_infos.insert(
+            node_index,
+            PortableNativeGlyphInfo {
+                glyphs: metrics.glyphs,
+            },
+        );
+    }
+
+    pub(crate) unsafe fn measure_native_glyph(
+        engine: *mut PortableTexEngine<'resources>,
+        node: voidpointer,
+        use_glyph_metrics: integer,
+    ) {
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        let Some(node_index) = Self::node_index_for_pointer(engine, node) else {
+            return;
+        };
+        let mem = engine.state.zmem;
+        let font_number = Self::native_node_font(mem, node_index);
+        let Some(font_handle) = Self::font_handle_for_number(engine, font_number) else {
+            return;
+        };
+        let glyph = (*mem.offset((node_index + 4) as isize)).v.QQQQ.u.B2 as u16;
+        let metrics = engine
+            .fonts
+            .measure_native_glyph(font_handle, glyph, use_glyph_metrics != 0);
+        Self::write_native_node_metrics(
+            mem,
+            node_index,
+            metrics.width,
+            metrics.height,
+            metrics.depth,
+        );
+        (*mem.offset((node_index + 4) as isize)).v.QQQQ.u.B3 = (1 as quarterword) as u16;
+        // NOTE: a `glyph_node` is allocated with `glyph_node_size = 5` words
+        // (indices 0..=4), but XeTeX's `native_glyph_info_ptr` macro lives at word
+        // `node + 5` -- one past this node. In the original C engine that word
+        // aliases adjacent `mem`, which is tolerated; here `mem` is a bounds-real
+        // Rust array and writing `node + 5` corrupts the *next* node (it crashed
+        // `var_delimiter`, which builds a single-glyph delimiter box this way).
+        // The glyph info this field would point at is held authoritatively in the
+        // engine-side `native_glyph_infos` map (keyed by node index) and the raw
+        // `node + 5` word is never dereferenced anywhere, so the write is omitted.
+        engine.native_glyph_infos.insert(
+            node_index,
+            PortableNativeGlyphInfo {
+                glyphs: Vec::from([PortableNativeGlyph {
+                    glyph_id: glyph,
+                    x: 0,
+                    y: 0,
+                    advance: metrics.width,
+                    cluster_start: 0,
+                    cluster_end: 0,
+                    src_start: 0,
+                    src_end: 0,
+                }]),
+            },
+        );
+    }
+
+    pub(crate) unsafe fn znotaatfonterror(
+        self: &mut Self,
+        cmd: integer,
+        c_0: integer,
+        f_0: integer,
+    ) -> EngineFlow<()> {
+        self.znototfonterror(cmd, c_0, f_0)?;
+        Ok(())
+    }
+
+    pub(crate) unsafe fn znotaatgrfonterror(
+        self: &mut Self,
+        cmd: integer,
+        c_0: integer,
+        f_0: integer,
+    ) -> EngineFlow<()> {
+        self.znototfonterror(cmd, c_0, f_0)?;
+        Ok(())
+    }
+
+    /// Append a native glyph for `(f_0, g_0)` to the end of box `b`, growing the
+    /// box height/depth (hlist) or width (vlist). Port of XeTeX's
+    /// `stack_glyph_into_box` (`xetex.web`). The glyph node is `glyph_node_size`
+    /// (5) words, measured through `measure_native_glyph`.
+    unsafe fn stack_glyph_into_box(
+        self: &mut Self,
+        b: halfword,
+        f_0: internalfontnumber,
+        g_0: integer,
+    ) -> EngineFlow<()> {
+        let mem: *mut memoryword = self.state.zmem.as_mut_ptr();
+        const NULL: halfword = -(268435455 as i64) as halfword;
+        let p = (&mut *(self as *mut PortableTexEngine<'_>)).zgetnode(5)?;
+        (*mem.offset(p as isize)).hh.u.B0 = 8;
+        (*mem.offset(p as isize)).hh.u.B1 = 42;
+        (*mem.offset((p + 4) as isize)).v.QQQQ.u.B1 = (f_0 as quarterword) as u16;
+        (*mem.offset((p + 4) as isize)).v.QQQQ.u.B2 = (g_0 as quarterword) as u16;
+        Self::measure_native_glyph(
+            self as *mut PortableTexEngine<'resources>,
+            mem.offset(p as isize) as *mut memoryword as *mut (),
+            1,
+        );
+        Ok(
+            if (*mem.offset(b as isize)).hh.u.B0 as i32 == 0 {
+                let mut q = (*mem.offset((b + 5) as isize)).hh.v.RH;
+                if q == NULL {
+                    (*mem.offset((b + 5) as isize)).hh.v.RH = p;
+                } else {
+                    while (*mem.offset(q as isize)).hh.v.RH != NULL {
+                        q = (*mem.offset(q as isize)).hh.v.RH;
+                    }
+                    (*mem.offset(q as isize)).hh.v.RH = p;
+                    if (*mem.offset((b + 3) as isize)).u.CINT
+                        < (*mem.offset((p + 3) as isize)).u.CINT
+                    {
+                        (*mem.offset((b + 3) as isize)).u.CINT = (*mem
+                            .offset((p + 3) as isize))
+                            .u
+                            .CINT;
+                    }
+                    if (*mem.offset((b + 2) as isize)).u.CINT
+                        < (*mem.offset((p + 2) as isize)).u.CINT
+                    {
+                        (*mem.offset((b + 2) as isize)).u.CINT = (*mem
+                            .offset((p + 2) as isize))
+                            .u
+                            .CINT;
+                    }
+                }
+            } else {
+                (*mem.offset(p as isize)).hh.v.RH = (*mem.offset((b + 5) as isize))
+                    .hh
+                    .v
+                    .RH;
+                (*mem.offset((b + 5) as isize)).hh.v.RH = p;
+                (*mem.offset((b + 3) as isize)).u.CINT = (*mem.offset((p + 3) as isize))
+                    .u
+                    .CINT;
+                if (*mem.offset((b + 1) as isize)).u.CINT
+                    < (*mem.offset((p + 1) as isize)).u.CINT
+                {
+                    (*mem.offset((b + 1) as isize)).u.CINT = (*mem
+                        .offset((p + 1) as isize))
+                        .u
+                        .CINT;
+                }
+            },
+        )
+    }
+
+    /// Append a glue node with natural width `min` and stretch `max - min` to box
+    /// `b`. Port of XeTeX's `stack_glue_into_box` (`xetex.web`).
+    unsafe fn stack_glue_into_box(
+        self: &mut Self,
+        b: halfword,
+        min: scaled,
+        max: scaled,
+    ) -> EngineFlow<()> {
+        let mem: *mut memoryword = self.state.zmem.as_mut_ptr();
+        const NULL: halfword = -(268435455 as i64) as halfword;
+        const ZERO_GLUE: halfword = 0;
+        let q = (&mut *(self as *mut PortableTexEngine<'_>)).znewspec(ZERO_GLUE)?;
+        (*mem.offset((q + 1) as isize)).u.CINT = min;
+        (*mem.offset((q + 2) as isize)).u.CINT = max - min;
+        let p = (&mut *(self as *mut PortableTexEngine<'_>)).znewglue(q)?;
+        Ok(
+            if (*mem.offset(b as isize)).hh.u.B0 as i32 == 0 {
+                let mut r = (*mem.offset((b + 5) as isize)).hh.v.RH;
+                if r == NULL {
+                    (*mem.offset((b + 5) as isize)).hh.v.RH = p;
+                } else {
+                    while (*mem.offset(r as isize)).hh.v.RH != NULL {
+                        r = (*mem.offset(r as isize)).hh.v.RH;
+                    }
+                    (*mem.offset(r as isize)).hh.v.RH = p;
+                }
+            } else {
+                (*mem.offset(p as isize)).hh.v.RH = (*mem.offset((b + 5) as isize))
+                    .hh
+                    .v
+                    .RH;
+                (*mem.offset((b + 5) as isize)).hh.v.RH = p;
+                (*mem.offset((b + 3) as isize)).u.CINT = (*mem.offset((p + 3) as isize))
+                    .u
+                    .CINT;
+                (*mem.offset((b + 1) as isize)).u.CINT = (*mem.offset((p + 1) as isize))
+                    .u
+                    .CINT;
+            },
+        )
+    }
+
+    /// Build a box (height/width at least `s`) for the stretchable glyph assembly
+    /// `assembly` in font `f_0`, stacking parts with overlap glue. Faithful port
+    /// of XeTeX's `build_opentype_assembly` (`xetex.web`), reading parts from the
+    /// heap-owned [`GlyphAssembly`] handed out by `get_ot_assembly_ptr`.
+    pub(crate) unsafe fn zbuildopentypeassembly(
+        self: &mut Self,
+        f_0: internalfontnumber,
+        assembly: voidpointer,
+        s: scaled,
+        horiz_flag: integer,
+    ) -> EngineFlow<halfword> {
+        let mem: *mut memoryword = self.state.zmem.as_mut_ptr();
+        let horiz = horiz_flag != 0;
+        let b = (&mut *(self as *mut PortableTexEngine<'_>)).newnullbox()?;
+        (*mem.offset(b as isize)).hh.u.B0 = if horiz { 0 } else { 1 };
+        let parts: &[PortableMathAssemblyPart] = if assembly.is_null() {
+            &[]
+        } else {
+            &(*(assembly as *const GlyphAssembly)).parts
+        };
+        let part_count = parts.len();
+        let min_o = Self::ot_min_connector_overlap(
+            self as *mut PortableTexEngine<'resources>,
+            f_0 as i32,
+        );
+        let mut n: integer = -1;
+        let mut no_extenders = true;
+        loop {
+            n += 1;
+            let mut s_max: scaled = 0;
+            let mut prev_o: scaled = 0;
+            for part in parts.iter() {
+                if part.extender {
+                    no_extenders = false;
+                    for _ in 0..n {
+                        let mut o = part.start_connector;
+                        if min_o < o {
+                            o = min_o;
+                        }
+                        if prev_o < o {
+                            o = prev_o;
+                        }
+                        s_max = s_max - o + part.full_advance;
+                        prev_o = part.end_connector;
+                    }
+                } else {
+                    let mut o = part.start_connector;
+                    if min_o < o {
+                        o = min_o;
+                    }
+                    if prev_o < o {
+                        o = prev_o;
+                    }
+                    s_max = s_max - o + part.full_advance;
+                    prev_o = part.end_connector;
+                }
+            }
+            if s_max >= s || no_extenders {
+                break;
+            }
+        }
+        let mut prev_o: scaled = 0;
+        for i in 0..part_count {
+            let part = parts[i];
+            let reps = if part.extender { n } else { 1 };
+            for _ in 0..reps {
+                let mut o = part.start_connector;
+                if prev_o < o {
+                    o = prev_o;
+                }
+                let oo = o;
+                if min_o < o {
+                    o = min_o;
+                }
+                if oo > 0 {
+                    (&mut *(self as *mut PortableTexEngine<'_>))
+                        .stack_glue_into_box(b, -oo, -o)?;
+                }
+                let g = part.glyph;
+                (&mut *(self as *mut PortableTexEngine<'_>))
+                    .stack_glyph_into_box(b, f_0, g)?;
+                prev_o = part.end_connector;
+            }
+        }
+        const NULL: halfword = -(268435455 as i64) as halfword;
+        let mut p = (*mem.offset((b + 5) as isize)).hh.v.RH;
+        let mut nat: scaled = 0;
+        let mut str_: scaled = 0;
+        while p != NULL {
+            let ty = (*mem.offset(p as isize)).hh.u.B0 as i32;
+            if ty == 8 {
+                if horiz {
+                    nat += (*mem.offset((p + 1) as isize)).u.CINT;
+                } else {
+                    nat
+                        += (*mem.offset((p + 3) as isize)).u.CINT
+                            + (*mem.offset((p + 2) as isize)).u.CINT;
+                }
+            } else if ty == 10 {
+                let spec = (*mem.offset((p + 1) as isize)).hh.v.LH;
+                nat += (*mem.offset((spec + 1) as isize)).u.CINT;
+                str_ += (*mem.offset((spec + 2) as isize)).u.CINT;
+            }
+            p = (*mem.offset(p as isize)).hh.v.RH;
+        }
+        if s > nat && str_ > 0 {
+            let mut o = s - nat;
+            if o > str_ {
+                o = str_;
+            }
+            (*mem.offset((b + 5) as isize)).hh.u.B1 = 0;
+            (*mem.offset((b + 5) as isize)).hh.u.B0 = 1;
+            (*mem.offset((b + 6) as isize)).gr = o as f64 / str_ as f64;
+            let stretched = nat
+                + (str_ as f64 * (*mem.offset((b + 6) as isize)).gr).round() as scaled;
+            if horiz {
+                (*mem.offset((b + 1) as isize)).u.CINT = stretched;
+            } else {
+                (*mem.offset((b + 3) as isize)).u.CINT = stretched;
+            }
+        } else if horiz {
+            (*mem.offset((b + 1) as isize)).u.CINT = nat;
+        } else {
+            (*mem.offset((b + 3) as isize)).u.CINT = nat;
+        }
+        Ok(b)
+    }
+
+}
+
+pub(crate) unsafe fn fputs(_text: const_string, _file: NativeFileHandle) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn free(_ptr: voidpointer) {}
+
+pub(crate) unsafe fn xrealloc(old_address: address, _new_size: size_t) -> address {
+    old_address
+}
+
+pub(crate) unsafe fn getcreationdate() {}
+
+pub(crate) unsafe fn getfilemoddate(_s: integer) {}
+
+pub(crate) unsafe fn getfilesize(_s: integer) {}
+
+pub(crate) unsafe fn getfiledump(_s: integer, _offset: i32, _length: i32) {}
+
+pub(crate) unsafe fn getmd5sum(_s: integer, _file: i32) {}
+
+pub(crate) unsafe fn u_close_file_or_pipe(file: *mut unicodefile) {
+    if !file.is_null() {
+        PortableTexEngine::boundary_close_file(*file);
+        *file = core::ptr::null_mut();
+    }
+}
+
+pub(crate) unsafe fn setinputfileencoding(
+    file: unicodefile,
+    mode: integer,
+    _encoding_data: integer,
+) {
+    // XeTeX modes: AUTO=0, UTF8=1, UTF16BE=2, UTF16LE=3, RAW=4, ICUMAPPING=5.
+    // We do not support ICU; unknown/ICU modes degrade to raw bytes. `AUTO`
+    // here resolves to UTF-8 (the default after a failed sniff).
+    if file.is_null() {
+        return;
+    }
+    let handle = &mut *file;
+    handle.encoding = match mode {
+        1 => InputEncoding::Utf8,
+        2 => InputEncoding::Utf16Be,
+        3 => InputEncoding::Utf16Le,
+        4 => InputEncoding::Bytes,
+        0 => InputEncoding::Utf8, // AUTO resolves to UTF-8.
+        _ => InputEncoding::Bytes,
+    };
+}
+
+pub(crate) unsafe fn usingGraphite(_engine: FontHandle) -> boolean {
+    false_0
+}
+
+pub(crate) unsafe fn aatprintfontname(
+    _what: i32,
+    _attrs: CFDictionaryRef,
+    _param1: i32,
+    _param2: i32,
+) {
+}
+
+pub(crate) unsafe fn grprintfontname(
+    _what: integer,
+    _engine: voidpointer,
+    _param1: integer,
+    _param2: integer,
+) {
+}
+
+pub(crate) unsafe fn printglyphname(_font: integer, _gid: integer) {}
+
+pub(crate) unsafe fn getnativecharheightdepth(
+    _font: integer,
+    _ch: integer,
+    height: *mut integer,
+    depth: *mut integer,
+) {
+    if !height.is_null() {
+        *height = 0;
+    }
+    if !depth.is_null() {
+        *depth = 0;
+    }
+}
+
+pub(crate) unsafe fn getnativecharsidebearings(
+    _font: integer,
+    _ch: integer,
+    lsb: *mut integer,
+    rsb: *mut integer,
+) {
+    if !lsb.is_null() {
+        *lsb = 0;
+    }
+    if !rsb.is_null() {
+        *rsb = 0;
+    }
+}
+
+pub(crate) unsafe fn getnativecharwd(_font: integer, _ch: integer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn getnativecharht(_font: integer, _ch: integer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn getnativechardp(_font: integer, _ch: integer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn getnativecharic(_font: integer, _ch: integer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn getglyphbounds(_font: integer, _edge: integer, _gid: integer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn getfontcharrange(_font: integer, _first: i32) -> integer {
+    0
+}
+
+pub(crate) unsafe fn get_native_italic_correction(_node: voidpointer) -> Fixed {
+    0
+}
+
+pub(crate) unsafe fn get_native_glyph_italic_correction(_node: voidpointer) -> Fixed {
+    0
+}
+
+pub(crate) unsafe fn applymapping(
+    _mapping: voidpointer,
+    _text: *mut uint16_t,
+    text_len: i32,
+) -> i32 {
+    text_len
+}
+
+pub(crate) unsafe fn checkfortfmfontmapping() {}
+
+pub(crate) unsafe fn loadtfmfontmapping() -> voidpointer {
+    nullptr
+}
+
+pub(crate) unsafe fn applytfmfontmapping(_mapping: voidpointer, c_0: i32) -> i32 {
+    c_0
+}
+
+pub(crate) unsafe fn set_cp_code(
+    _font_num: i32,
+    _code: u32,
+    _side: i32,
+    _value: i32,
+) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn countpdffilepages() -> i32 {
+    0
+}
+
+pub(crate) unsafe fn aatfontget(_what: i32, _attrs: CFDictionaryRef) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn aatfontget1(_what: i32, _attrs: CFDictionaryRef, _param: i32) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn aatfontget2(
+    _what: i32,
+    _attrs: CFDictionaryRef,
+    _param1: i32,
+    _param2: i32,
+) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn aatfontgetnamed(_what: i32, _attrs: CFDictionaryRef) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn aatfontgetnamed1(
+    _what: i32,
+    _attrs: CFDictionaryRef,
+    _param: i32,
+) -> i32 {
+    0
+}
+
+pub(crate) unsafe fn grfontgetnamed(_what: integer, _engine: voidpointer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn grfontgetnamed1(
+    _what: integer,
+    _engine: voidpointer,
+    _param: integer,
+) -> integer {
+    0
+}
+
+pub(crate) unsafe fn otfontget(_what: integer, _engine: voidpointer) -> integer {
+    0
+}
+
+pub(crate) unsafe fn otfontget1(
+    _what: integer,
+    _engine: voidpointer,
+    _param: integer,
+) -> integer {
+    0
+}
+
+pub(crate) unsafe fn otfontget2(
+    _what: integer,
+    _engine: voidpointer,
+    _param1: integer,
+    _param2: integer,
+) -> integer {
+    0
+}
+
+pub(crate) unsafe fn otfontget3(
+    _what: integer,
+    _engine: voidpointer,
+    _param1: integer,
+    _param2: integer,
+    _param3: integer,
+) -> integer {
+    0
+}
+
+/// Reclaim a [`GlyphAssembly`] previously handed out by
+/// `get_ot_assembly_ptr`. Mirrors XeTeX's `free_ot_assembly`, but reclaims the
+/// safe Rust `Box` allocation instead of calling `libc::free`.
+///
+/// # Safety
+/// `assembly`, if non-null, must be a pointer returned by `get_ot_assembly_ptr`
+/// and not previously freed.
+pub(crate) unsafe fn free_ot_assembly(assembly: *mut GlyphAssembly) {
+    if !assembly.is_null() {
+        drop(Box::from_raw(assembly));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a text [`PortableFileHandle`] over `bytes` with the given encoding.
+    fn text_handle(bytes: Vec<u8>, encoding: InputEncoding) -> PortableFileHandle {
+        let mut handle = PortableFileHandle::new(
+            "test.tex".to_string(),
+            ResourceKind::TexInput,
+            None,
+            resource_format_tex_input,
+            bytes,
+        );
+        handle.encoding = encoding;
+        handle
+    }
+
+    /// Drain every Unicode scalar the decoder produces until EOF.
+    fn decode_all(handle: &mut PortableFileHandle) -> Vec<u32> {
+        let mut out = Vec::new();
+        while let Some(scalar) = handle.next_input_scalar() {
+            out.push(scalar);
+        }
+        out
+    }
+
+    #[test]
+    fn utf8_decoder_reads_multibyte_scalars() {
+        // "αβγ" = CE B1 CE B2 CE B3 -> U+03B1, U+03B2, U+03B3.
+        let mut h = text_handle(vec![0xCE, 0xB1, 0xCE, 0xB2, 0xCE, 0xB3], InputEncoding::Utf8);
+        assert_eq!(decode_all(&mut h), vec![0x3B1, 0x3B2, 0x3B3]);
+        // ASCII stays one-scalar-per-byte; a 3-byte (U+20AC €) and 4-byte
+        // (U+1F600 😀) sequence round-trip.
+        let mut h = text_handle(
+            vec![b'A', 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80],
+            InputEncoding::Utf8,
+        );
+        assert_eq!(decode_all(&mut h), vec![0x41, 0x20AC, 0x1F600]);
+    }
+
+    #[test]
+    fn utf8_decoder_replaces_bad_sequences() {
+        // A lead byte 0xCE followed by a non-continuation 'A' -> U+FFFD, and the
+        // 'A' is UNGETC'd so it decodes next.
+        let mut h = text_handle(vec![0xCE, b'A'], InputEncoding::Utf8);
+        assert_eq!(decode_all(&mut h), vec![0xFFFD, 0x41]);
+        // Lone continuation byte (0x80..0xBF as a lead) decodes to itself with
+        // zero extra bytes (matches bytesFromUTF8 == 0), i.e. C8.. raw -> 0xFFFD
+        // only when range-checked; a bare 0x80 has extra=0 so rval=0x80.
+        let mut h = text_handle(vec![0x80], InputEncoding::Utf8);
+        assert_eq!(decode_all(&mut h), vec![0x80]);
+    }
+
+    #[test]
+    fn utf16_decoders_read_units_and_surrogates() {
+        // "αβγ" UTF-16LE: B1 03 B2 03 B3 03.
+        let mut h = text_handle(
+            vec![0xB1, 0x03, 0xB2, 0x03, 0xB3, 0x03],
+            InputEncoding::Utf16Le,
+        );
+        assert_eq!(decode_all(&mut h), vec![0x3B1, 0x3B2, 0x3B3]);
+        // Same in UTF-16BE: 03 B1 03 B2 03 B3.
+        let mut h = text_handle(
+            vec![0x03, 0xB1, 0x03, 0xB2, 0x03, 0xB3],
+            InputEncoding::Utf16Be,
+        );
+        assert_eq!(decode_all(&mut h), vec![0x3B1, 0x3B2, 0x3B3]);
+        // Surrogate pair U+1F600 in UTF-16LE: D83D DE00 -> 3D D8 00 DE.
+        let mut h = text_handle(vec![0x3D, 0xD8, 0x00, 0xDE], InputEncoding::Utf16Le);
+        assert_eq!(decode_all(&mut h), vec![0x1F600]);
+        // High surrogate followed by a non-low unit -> U+FFFD, and the stray unit
+        // (here U+0041) is stashed in saved_char and decoded next.
+        let mut h = text_handle(vec![0x3D, 0xD8, 0x41, 0x00], InputEncoding::Utf16Le);
+        assert_eq!(decode_all(&mut h), vec![0xFFFD, 0x41]);
+        // Lone low surrogate -> U+FFFD.
+        let mut h = text_handle(vec![0x00, 0xDC], InputEncoding::Utf16Le);
+        assert_eq!(decode_all(&mut h), vec![0xFFFD]);
+    }
+
+    #[test]
+    fn bytes_mode_reads_each_byte_raw() {
+        // RAW/Bytes: every byte becomes its own scalar, no multibyte decoding.
+        let mut h = text_handle(vec![0xCE, 0xB1, 0x41], InputEncoding::Bytes);
+        assert_eq!(decode_all(&mut h), vec![0xCE, 0xB1, 0x41]);
+    }
+
+    #[test]
+    fn bom_sniff_selects_encoding_and_consumes_bom() {
+        // UTF-8 BOM EF BB BF + "A" -> UTF8, BOM consumed, 'A' next.
+        let mut h = text_handle(vec![0xEF, 0xBB, 0xBF, b'A'], InputEncoding::Bytes);
+        h.resolve_text_encoding_auto();
+        assert_eq!(h.encoding, InputEncoding::Utf8);
+        assert_eq!(h.cursor, 3);
+        assert_eq!(decode_all(&mut h), vec![0x41]);
+        // UTF-16BE BOM FE FF + U+03B1 -> UTF16BE, BOM consumed.
+        let mut h = text_handle(vec![0xFE, 0xFF, 0x03, 0xB1], InputEncoding::Bytes);
+        h.resolve_text_encoding_auto();
+        assert_eq!(h.encoding, InputEncoding::Utf16Be);
+        assert_eq!(h.cursor, 2);
+        assert_eq!(decode_all(&mut h), vec![0x3B1]);
+        // UTF-16LE BOM FF FE + U+03B1 -> UTF16LE, BOM consumed.
+        let mut h = text_handle(vec![0xFF, 0xFE, 0xB1, 0x03], InputEncoding::Bytes);
+        h.resolve_text_encoding_auto();
+        assert_eq!(h.encoding, InputEncoding::Utf16Le);
+        assert_eq!(h.cursor, 2);
+        assert_eq!(decode_all(&mut h), vec![0x3B1]);
+        // No BOM, ASCII text -> UTF8, nothing consumed.
+        let mut h = text_handle(vec![b'h', b'i'], InputEncoding::Bytes);
+        h.resolve_text_encoding_auto();
+        assert_eq!(h.encoding, InputEncoding::Utf8);
+        assert_eq!(h.cursor, 0);
+        // 00 xx (BOM-less UTF-16BE heuristic) -> UTF16BE, NOT consumed (rewind).
+        let mut h = text_handle(vec![0x00, 0x41], InputEncoding::Bytes);
+        h.resolve_text_encoding_auto();
+        assert_eq!(h.encoding, InputEncoding::Utf16Be);
+        assert_eq!(h.cursor, 0);
+        assert_eq!(decode_all(&mut h), vec![0x41]);
+    }
+
+    #[test]
+    fn input_line_decodes_into_buffer_per_profile() {
+        // End-to-end through the real `boundary_input_line` reader: a text input
+        // under the XeTeX profile is decoded (encoding resolved by the open-path
+        // AUTO sniff), while the same bytes under the non-XeTeX (tex) profile are
+        // read raw (Bytes mode). The engine's `buffer[first..last]` must hold the
+        // expected Unicode scalars.
+        fn buffer_after_input_line(profile: EngineProfile, bytes: Vec<u8>) -> Vec<u32> {
+            let image = PortableFormatImage::empty();
+            let mut engine = PortableTexEngine::from_format(profile, &image, EmptyResourceProvider);
+            engine.initialize_format_state();
+            // Build a text handle and resolve its encoding via the same open-path
+            // helper the boundary open sites use.
+            let mut handle = PortableFileHandle::new(
+                "input.tex".to_string(),
+                ResourceKind::TexInput,
+                None,
+                resource_format_tex_input,
+                bytes,
+            );
+            PortableTexEngine::resolve_input_encoding(&engine, &mut handle);
+            let raw = Box::into_raw(Box::new(handle));
+            // Read one line into the buffer starting at `state.first`.
+            engine.state.first = 0;
+            let ok = unsafe {
+                PortableTexEngine::boundary_input_line(
+                    &mut engine as *mut PortableTexEngine<'_>,
+                    raw as NativeFileHandle,
+                )
+            };
+            assert_ne!(ok, 0, "boundary_input_line should succeed");
+            let first = engine.state.first.max(0) as usize;
+            let last = engine.state.last.max(0) as usize;
+            let out = (first..last)
+                .map(|i| unsafe { *engine.state.buffer.offset(i as isize) as u32 })
+                .collect();
+            unsafe { drop(Box::from_raw(raw)) };
+            out
+        }
+        // "αβγ" = CE B1 CE B2 CE B3.
+        let utf8 = vec![0xCE, 0xB1, 0xCE, 0xB2, 0xCE, 0xB3];
+        assert_eq!(
+            buffer_after_input_line(EngineProfile::xetex(), utf8.clone()),
+            vec![0x3B1, 0x3B2, 0x3B3],
+            "xetex must UTF-8 decode the input line"
+        );
+        assert_eq!(
+            buffer_after_input_line(EngineProfile::tex(), utf8),
+            vec![0xCE, 0xB1, 0xCE, 0xB2, 0xCE, 0xB3],
+            "non-xetex must read raw bytes"
+        );
+        // UTF-16LE with BOM under xetex decodes to the same scalars.
+        let utf16le_bom = vec![0xFF, 0xFE, 0xB1, 0x03, 0xB2, 0x03, 0xB3, 0x03];
+        assert_eq!(
+            buffer_after_input_line(EngineProfile::xetex(), utf16le_bom),
+            vec![0x3B1, 0x3B2, 0x3B3],
+            "xetex must UTF-16LE decode a BOM'd input line"
+        );
+        // UTF-16BE with BOM under xetex.
+        let utf16be_bom = vec![0xFE, 0xFF, 0x03, 0xB1, 0x03, 0xB2, 0x03, 0xB3];
+        assert_eq!(
+            buffer_after_input_line(EngineProfile::xetex(), utf16be_bom),
+            vec![0x3B1, 0x3B2, 0x3B3],
+            "xetex must UTF-16BE decode a BOM'd input line"
+        );
+    }
+
+    #[test]
+    fn engine_abort_is_captured_at_runtime_boundary() {
+        let image = PortableFormatImage::empty();
+        let mut engine =
+            PortableTexEngine::from_format(EngineProfile::tex(), &image, EmptyResourceProvider);
+
+        let completed = engine.catch_engine_abort(|engine| unsafe {
+            PortableTexEngine::abort_engine(engine as *mut PortableTexEngine<'_>, 7)?;
+            Ok(())
+        });
+
+        assert!(!completed);
+        assert_eq!(engine.last_abort_status(), Some(7));
+    }
+
+    #[test]
+    fn successful_engine_abort_completes_runtime_boundary() {
+        let image = PortableFormatImage::empty();
+        let mut engine =
+            PortableTexEngine::from_format(EngineProfile::tex(), &image, EmptyResourceProvider);
+
+        let completed = engine.catch_engine_abort(|engine| unsafe {
+            PortableTexEngine::abort_engine(engine as *mut PortableTexEngine<'_>, 0)?;
+            Ok(())
+        });
+
+        assert!(completed);
+        assert_eq!(engine.last_abort_status(), None);
+    }
+}

@@ -1,0 +1,3 @@
+    pub(crate) unsafe fn {function_name}(&mut self) {
+        Self::record_stripped_source_special(self as *mut PortableTexEngine<'_>);
+    }

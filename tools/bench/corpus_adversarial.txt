@@ -1,0 +1,20 @@
+x+x+x+x+x
+a^{b^{c^{d}}}
+\frac{1}{1+\frac{1}{1+\frac{1}{1+x}}}
+\alpha\beta\gamma\delta\epsilon
+x  +  y  +  z
+\frac{}{x}+\frac{y}{}
+1+22+333+4444
+x_{i}+x_{i}+x_{i}
+a+a=a\cdot a
+\sqrt{\sqrt{\sqrt{x}}}
+\left(\frac{a}{b}\right)^{n}
+\sum_{i=1}^{n}i+\sum_{j=1}^{n}j
+\int_{0}^{1}\int_{0}^{1}f
+1\le 2\le 3\le 4
+\frac{a^{2}}{a^{2}}+\frac{a^{2}}{a^{2}}
+x\to y\to z\to w
+a_{1}^{2}+a_{2}^{2}+a_{3}^{2}
+{{{x}}}+{{{y}}}
+\frac{\frac{\frac{a}{b}}{c}}{d}
+p\wedge q\wedge p\wedge q

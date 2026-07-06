@@ -1,0 +1,27 @@
+[package]
+name = "mathtex-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable TeX engine wrapper for mathtex: profiles, formats, resources, fonts, fragment sessions, IR lowering"
+# Integration tests read fixtures from the local vendor tree, which cannot ship in the package.
+exclude = ["tests/"]
+
+[features]
+default = ["std"]
+std = ["mathtex-font/std", "mathtex-ir/std"]
+
+[dependencies]
+mathtex-portable-engine-generated = { version = "0.1.0", path = "../../generated/portable-engine" }
+mathtex-font = { version = "0.1.0", path = "../mathtex-font", default-features = false }
+mathtex-ir = { version = "0.1.0", path = "../mathtex-ir", default-features = false }
+# Pure-Rust DEFLATE (wasm-friendly) used to compress packaged format images.
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+mathtex-svg = { path = "../mathtex-svg" }
+mathtex-render = { path = "../mathtex-render" }
+
+[lints]
+workspace = true

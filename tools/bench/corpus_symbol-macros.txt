@@ -1,0 +1,22 @@
+a\le b
+\alpha+\beta
+x\to\infty
+a\le b\le c
+\alpha\le\alpha\le\alpha
+x\to y\to z\to w
+\pi\approx\pi
+a\neq b\neq a
+\alpha\beta\gamma\pi
+1\le 2\le 3\le 4
+p\Rightarrow q\Rightarrow r
+\partial x\partial y
+a\in\alpha\subset\beta
+\pm\pm\pm
+2\times 2\times 2
+a\cdot b\cdot c\cdot d
+\le\ge\le\ge
+\rightarrow\to\rightarrow
+\gamma\le\gamma+\gamma\le 2\gamma
+\alpha\times\beta\cdot\gamma\neq\pi
+x+\alpha\le y+\beta\to z
+\infty\pm\infty

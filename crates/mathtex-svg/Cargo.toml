@@ -1,0 +1,18 @@
+[package]
+name = "mathtex-svg"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SVG backend for mathtex layout IR with deduplicated glyph outlines"
+
+[features]
+default = ["std"]
+std = ["mathtex-ir/std", "mathtex-render/std"]
+
+[dependencies]
+mathtex-ir = { version = "0.1.0", path = "../mathtex-ir", default-features = false }
+mathtex-render = { version = "0.1.0", path = "../mathtex-render", default-features = false }
+
+[lints]
+workspace = true

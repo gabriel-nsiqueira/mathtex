@@ -1,0 +1,345 @@
+This crate is a machine translation of the TeX, eTeX and XeTeX sources,
+made portable for the mathtex project. It derives from the upstream
+sources at https://github.com/TeX-Live/texlive-source
+vendored at commit d92f5f9896b7a15afd6106da873fc64b958eea80.
+
+The upstream license notices below apply to the translated code and are
+reproduced verbatim from the source files each section names. The same
+notices are available in machine readable form in
+THIRD-PARTY-LICENSES.json next to this file.
+
+========================================================================
+Source: texk/web2c/etexdir/etex.ch
+Profiles: etex
+
+% This is etex.ch, a
+% WEB change file containing code for various features extending TeX;
+% to be applied to tex.web in order to define the
+% e-TeX program.
+
+% e-TeX is copyright (C) 1999-2012 by P. Breitenlohner (1994,98 by the NTS
+% team); all rights are reserved. Copying of this file is authorized only if
+% (1) you are P. Breitenlohner, or if (2) you make absolutely no changes to
+% your copy. (Programs such as TIE allow the application of several change
+% files to tex.web; the master files tex.web and etex.ch should stay intact.)
+
+% See etex_gen.tex for hints on how to install this program.
+% And see etripman.tex for details about how to validate it.
+
+% The TeX program is copyright (C) 1982 by D. E. Knuth.
+% TeX is a trademark of the American Mathematical Society.
+% e-TeX and NTS are trademarks of the NTS group.
+
+% All line numbers refer to tex.web 3.141592653 as of January 29, 2021.
+
+========================================================================
+Source: texk/web2c/tex.ch
+Profiles: tex, etex, xetex
+
+% tex.ch for C compilation with web2c, derived from various other change files.
+% By Tim Morgan, UC Irvine ICS Department, and many others.
+%
+% Be very careful when making changes to this file, as it is used to
+% generate TeX, e-TeX, and pdfTeX, and most changes require similar
+% changes to be made to the Aleph sources.
+%
+% (05/28/86) ETM Started with TeX 2.0
+% (06/03/87) ETM Brought up to TeX 2.2
+% (09/26/87) ETM Brought up to TeX 2.3
+% (10/01/87) ETM Brought up to TeX 2.5
+% (12/21/87) ETM Brought up to TeX 2.7
+% (01/14/88) ETM Brought up to TeX 2.9
+% (02/20/88) PAM Revised format and module numbers
+% (03/01/88) ETM Eliminated some unused variables and unnecessary tests
+% (05/09/88) ETM Added yet another casting bug fix
+% (06/21/88) ETM Brought up to TeX version 2.93
+% (12/11/88) ETM Brought up to TeX version 2.94
+% (01/12/89) PAM Brought up to TeX version 2.95
+% (02/14/89) ETM Brought up to TeX version 2.96
+% (03/10/89) ETM Brought up to TeX version 2.98
+% (07/06/89) ETM Brought up to TeX version 2.991
+% (11/30/89) KB  To version 2.992 (8-bit).
+% (01/10/90) SR  To version 2.993.
+% (03/27/90) KY  To version 3.0.
+% (more recent changes in ChangeLog)
+%
+% The TeX program is copyright (C) 1982 by D. E. Knuth.
+% TeX is a trademark of the American Mathematical Society.
+%
+% Includes MLTEX.CH (Version 2.2) in text format, as of Dec 17, 1995.
+% MLTeX is copyright (C) 1990-92 by Michael J. Ferguson; all rights reserved.
+% MLTeX Version 2.2 is copyright (C) 1995 by B. Raichle; all rights reserved.
+%
+% The MLTeX changes are copyrighted so that we have some chance to
+% forbid unauthorized copies; we explicitly authorize copying of
+% correct MLTeX implementations, and not of incorrect ones!
+%
+% (This means that you can use the MLTeX changes as free as you can
+% use TeX and its algorithm.)
+%
+% Copying of this file is authorized only if either
+% (1) you make absolutely no changes to your copy, including name, or
+% (2) if you do make changes, you name it to something other than
+%     "mltex.ch", "char_sub.ch", or "charsub.ch".
+%
+% Except for MLTeX, the new code in this file is in the public domain.
+%
+% The part, module, and line numbers in this change file refer to
+% TEX.WEB 3.141592653 as of January, 2021 (published as Donald E. Knuth,
+% TeX: The Program, Volume B of Computers & Typesetting Jubilee Editions).
+
+========================================================================
+Source: texk/web2c/tex.web
+Profiles: tex, etex
+
+% This program is copyright (C) 1982 by D. E. Knuth; all rights are reserved.
+% Unlimited copying and redistribution of this file are permitted as long
+% as this file is not modified. Modifications are permitted, but only if
+% the resulting file is not named tex.web. (The WEB system provides
+% for alterations via an auxiliary file; the master file should stay intact.)
+% See Appendix H of the WEB manual for hints on how to install this program.
+% And see Appendix A of the TRIP manual for details about how to validate it.
+
+% TeX is a trademark of the American Mathematical Society.
+% METAFONT is a trademark of Addison-Wesley Publishing Company.
+
+% Version 0 was released in September 1982 after it passed a variety of tests.
+% Version 1 was released in November 1983 after thorough testing.
+% Version 1.1 fixed ``disappearing font identifiers'' et alia (July 1984).
+% Version 1.2 allowed `0' in response to an error, et alia (October 1984).
+% Version 1.3 made memory allocation more flexible and local (November 1984).
+% Version 1.4 fixed accents right after line breaks, et alia (April 1985).
+% Version 1.5 fixed \the\toks after other expansion in \edefs (August 1985).
+% Version 2.0 (almost identical to 1.5) corresponds to "Volume B" (April 1986).
+% Version 2.1 corrected anomalies in discretionary breaks (January 1987).
+% Version 2.2 corrected "(Please type...)" with null \endlinechar (April 1987).
+% Version 2.3 avoided incomplete page in premature termination (August 1987).
+% Version 2.4 fixed \noaligned rules in indented displays (August 1987).
+% Version 2.5 saved cur_order when expanding tokens (September 1987).
+% Version 2.6 added 10sp slop when shipping leaders (November 1987).
+% Version 2.7 improved rounding of negative-width characters (November 1987).
+% Version 2.8 fixed weird bug if no \patterns are used (December 1987).
+% Version 2.9 made \csname\endcsname's "relax" local (December 1987).
+% Version 2.91 fixed \outer\def\a0{}\a\a bug (April 1988).
+% Version 2.92 fixed \patterns, also file names with complex macros (May 1988).
+% Version 2.93 fixed negative halving in allocator when mem_min<0 (June 1988).
+% Version 2.94 kept open_log_file from calling fatal_error (November 1988).
+% Version 2.95 solved that problem a better way (December 1988).
+% Version 2.96 corrected bug in "Infinite shrinkage" recovery (January 1989).
+% Version 2.97 corrected blunder in creating 2.95 (February 1989).
+% Version 2.98 omitted save_for_after at outer level (March 1989).
+% Version 2.99 caught $$\begingroup\halign..$$ (June 1989).
+% Version 2.991 caught .5\ifdim.6... (June 1989).
+% Version 2.992 introduced major changes for 8-bit extensions (September 1989).
+% Version 2.993 fixed a save_stack synchronization bug et alia (December 1989).
+% Version 3.0 fixed unusual displays; was more \output robust (March 1990).
+% Version 3.1 fixed nullfont, disabled \write{\the\prevgraf} (September 1990).
+% Version 3.14 fixed unprintable font names and corrected typos (March 1991).
+% Version 3.141 more of same; reconstituted ligatures better (March 1992).
+% Version 3.1415 preserved nonexplicit kerns, tidied up (February 1993).
+% Version 3.14159 allowed fontmemsize to change; bulletproofing (March 1995).
+% Version 3.141592 fixed \xleaders, glueset, weird alignments (December 2002).
+% Version 3.1415926 was a general cleanup with minor fixes (February 2008).
+% Version 3.14159265 was similar (January 2014).
+% Version 3.141592653 was similar but more extensive (January 2021).
+
+% A reward of $327.68 will be paid to the first finder of any remaining bug.
+
+% Although considerable effort has been expended to make the TeX program
+% correct and reliable, no warranty is implied; the author disclaims any
+% obligation or liability for damages, including but not limited to
+% special, indirect, or consequential damages arising out of or in
+% connection with the use or performance of this software. This work has
+% been a ``labor of love'' and the author hopes that users enjoy it.
+
+========================================================================
+Source: texk/web2c/xetexdir/xetex.ch
+Profiles: xetex
+
+/****************************************************************************\
+ $Id$
+ Part of the XeTeX typesetting system
+ Copyright (c) 1994-2008 by SIL International
+ Copyright (c) 2009-2026 by Jonathan Kew
+ Copyright (c) 2012 by Khaled Hosny
+
+ SIL Author(s): Jonathan Kew
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the copyright holders
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in this Software without prior written
+authorization from the copyright holders.
+\****************************************************************************/
+
+========================================================================
+Source: texk/web2c/xetexdir/xetex.web
+Profiles: xetex
+
+% Copyright (c) 2009-2026 by Jonathan Kew
+% Copyright (c) 1994-2008 by SIL International
+% Copyright (c) 2010-2012 by Han The Thanh
+% Copyright (c) 2012-2013 by Khaled Hosny
+
+% SIL Author(s): Jonathan Kew
+
+% Part of the XeTeX typesetting system
+
+% Permission is hereby granted, free of charge, to any person obtaining a copy
+% of this software and associated documentation files (the "Software"), to deal
+% in the Software without restriction, including without limitation the rights
+% to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+% copies of the Software, and to permit persons to whom the Software is
+% furnished to do so, subject to the following conditions:
+
+% The above copyright notice and this permission notice shall be included in all
+% copies or substantial portions of the Software.
+
+% THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+% IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+% FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+% COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+% IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+% CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+% Except as contained in this notice, the name of the copyright holders shall
+% not be used in advertising or otherwise to promote the sale, use or other
+% dealings in this Software without prior written authorization from the
+% copyright holders.
+
+% e-TeX is copyright (C) 1999-2012 by P. Breitenlohner (1994,98 by the NTS
+% team); all rights are reserved. Copying of this file is authorized only if
+% (1) you are P. Breitenlohner, or if (2) you make absolutely no changes to
+% your copy. (Programs such as TIE allow the application of several change
+% files to tex.web; the master files tex.web and etex.ch should stay intact.)
+
+% See etex_gen.tex for hints on how to install this program.
+% And see etripman.tex for details about how to validate it.
+
+% e-TeX and NTS are trademarks of the NTS group.
+% TeX is a trademark of the American Mathematical Society.
+% METAFONT is a trademark of Addison-Wesley Publishing Company.
+
+% This program is directly derived from Donald E. Knuth's TeX;
+% the change history which follows and the reward offered for finders of
+% bugs refer specifically to TeX; they should not be taken as referring
+% to e-TeX, although the change history is relevant in that it
+% demonstrates the evolutionary path followed.  This program is not TeX;
+% that name is reserved strictly for the program which is the creation
+% and sole responsibility of Professor Knuth.
+
+% Version 0 was released in September 1982 after it passed a variety of tests.
+% Version 1 was released in November 1983 after thorough testing.
+% Version 1.1 fixed ``disappearing font identifiers'' et alia (July 1984).
+% Version 1.2 allowed `0' in response to an error, et alia (October 1984).
+% Version 1.3 made memory allocation more flexible and local (November 1984).
+% Version 1.4 fixed accents right after line breaks, et alia (April 1985).
+% Version 1.5 fixed \the\toks after other expansion in \edefs (August 1985).
+% Version 2.0 (almost identical to 1.5) corresponds to "Volume B" (April 1986).
+% Version 2.1 corrected anomalies in discretionary breaks (January 1987).
+% Version 2.2 corrected "(Please type...)" with null \endlinechar (April 1987).
+% Version 2.3 avoided incomplete page in premature termination (August 1987).
+% Version 2.4 fixed \noaligned rules in indented displays (August 1987).
+% Version 2.5 saved cur_order when expanding tokens (September 1987).
+% Version 2.6 added 10sp slop when shipping leaders (November 1987).
+% Version 2.7 improved rounding of negative-width characters (November 1987).
+% Version 2.8 fixed weird bug if no \patterns are used (December 1987).
+% Version 2.9 made \csname\endcsname's "relax" local (December 1987).
+% Version 2.91 fixed \outer\def\a0{}\a\a bug (April 1988).
+% Version 2.92 fixed \patterns, also file names with complex macros (May 1988).
+% Version 2.93 fixed negative halving in allocator when mem_min<0 (June 1988).
+% Version 2.94 kept open_log_file from calling fatal_error (November 1988).
+% Version 2.95 solved that problem a better way (December 1988).
+% Version 2.96 corrected bug in "Infinite shrinkage" recovery (January 1989).
+% Version 2.97 corrected blunder in creating 2.95 (February 1989).
+% Version 2.98 omitted save_for_after at outer level (March 1989).
+% Version 2.99 caught $$\begingroup\halign..$$ (June 1989).
+% Version 2.991 caught .5\ifdim.6... (June 1989).
+% Version 2.992 introduced major changes for 8-bit extensions (September 1989).
+% Version 2.993 fixed a save_stack synchronization bug et alia (December 1989).
+% Version 3.0 fixed unusual displays; was more \output robust (March 1990).
+% Version 3.1 fixed nullfont, disabled \write{\the\prevgraf} (September 1990).
+% Version 3.14 fixed unprintable font names and corrected typos (March 1991).
+% Version 3.141 more of same; reconstituted ligatures better (March 1992).
+% Version 3.1415 preserved nonexplicit kerns, tidied up (February 1993).
+% Version 3.14159 allowed fontmemsize to change; bulletproofing (March 1995).
+% Version 3.141592 fixed \xleaders, glueset, weird alignments (December 2002).
+% Version 3.1415926 was a general cleanup with minor fixes (February 2008).
+% Version 3.14159265 was similar (January 2014).
+% Version 3.141592653 was similar but more extensive (January 2021).
+
+% A reward of $327.68 will be paid to the first finder of any remaining bug.
+
+% A preliminary version of TeX--XeT was released in April 1992.
+% TeX--XeT version 1.0 was released in June 1992,
+%   version 1.1 prevented arith overflow in glue computation (Oct 1992).
+% A preliminary e-TeX version 0.95 was operational in March 1994.
+% Version 1.0beta was released in May 1995.
+% Version 1.01beta fixed bugs in just_copy and every_eof (December 1995).
+% Version 1.02beta allowed 256 mark classes (March 1996).
+% Version 1.1 changed \group{type,level} -> \currentgroup{type,level},
+%             first public release (October 1996).
+% Version 2.0 development was started in March 1997;
+%             fixed a ligature-\beginR bug in January 1998;
+%             was released in March 1998.
+% Version 2.1 fixed a \marks bug (when min_halfword<>0) (January 1999).
+% Version 2.2 development was started in Feb 2003; released in Oct 2004.
+%             fixed a bug in sparse array handling (0=>null), Jun 2002;
+%             fixed a bug in \lastnodetype (cur_val=>cur_val_level)
+%                 reported by Hartmut Henkel <hartmut_henkel@@gmx.de>,
+%                 fix by Fabrice Popineau <Fabrice.Popineau@@supelec.fr>,
+%                 Jan 2004;
+%             another bug in sparse array handling (cur_ptr=>cur_chr)
+%                 reported by Taco Hoekwater <taco@@elvenkind.com>, Jul 2004;
+%             fixed a sparse array reference count bug (\let,\futurelet),
+%                 fix by Bernd Raichle <berd@@dante.de>, Aug 2004;
+%             reorganized handling of banner, additional token list and
+%                 integer parameters, and similar in order to reduce the
+%                 interference between eTeX, pdfTeX, and web2c change files.
+%             adapted to tex.web 3.141592, revised glue rounding for mixed
+%                 direction typesetting;
+%             fixed a bug in the revised glue rounding code, detected by
+%                 Tigran Aivazian <tigran@@aivazian.fsnet.co.uk>, Oct 2004.
+% Version 2.3 development was started in Feb 2008; released in Apr 2011.
+%             fixed a bug in hyph_code handling (\savinghyphcodes)
+%                 reported by Vladimir Volovich <vvv@@vsu.ru>, Feb 2008.
+%             fixed the error messages for improper use of \protected,
+%                 reported by Heiko Oberdiek
+%                 <heiko.oberdiek@@googlemail.com>, May 2010.
+%             some rearrangements to reduce interferences between
+%                 e-TeX and pTeX, in part suggested by Hironori Kitagawa
+%                 <h_kitagawa2001@@yahoo.co.jp>, Mar 2011.
+% Version 2.4 fixed an uninitialized line number bug, released in May 2012.
+% Version 2.5 development was started in Aug 2012; released in Feb 2013.
+%             better tracing of font definitions, reported by
+%                 Bruno Le Floch <blflatex@@gmail.com>, Jul 2012.
+% Version 2.6 development was started in Mar 2013; released in ??? 201?.
+%             enable hyphenation of text between \beginL and \endL or
+%                 between \beginR and \endR, problem reported by
+%                 Vafa Khalighi <vafalgk@@gmail.com>, Nov 2013.
+%             better handling of right-to-left text -- to be done.
+
+% Although considerable effort has been expended to make the e-TeX program
+% correct and reliable, no warranty is implied; the author disclaims any
+% obligation or liability for damages, including but not limited to
+% special, indirect, or consequential damages arising out of or in
+% connection with the use or performance of this software. This work has
+% been a ``labor of love'' and the author hopes that users enjoy it.

@@ -1,0 +1,15 @@
+[package]
+name = "mathtex-web2c-import"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "visit-mut", "parsing", "printing", "extra-traits", "clone-impls"] }
+quote = "1"
+proc-macro2 = "1"
+prettyplease = "0.2"
+
+[lints]
+workspace = true

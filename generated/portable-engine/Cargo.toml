@@ -1,0 +1,12 @@
+[package]
+name = "mathtex-portable-engine-generated"
+version = "0.1.0"
+edition = "2021"
+description = "Machine generated portable TeX engine core for mathtex, translated from the TeX, eTeX and XeTeX sources"
+repository = "https://github.com/gabriel-nsiqueira/mathtex"
+license-file = "LICENSE"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

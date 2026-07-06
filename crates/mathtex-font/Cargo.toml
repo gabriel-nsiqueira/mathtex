@@ -1,0 +1,27 @@
+[package]
+name = "mathtex-font"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Font loading, shaping, and OpenType math access for mathtex, over rustybuzz and ttf-parser"
+
+[features]
+default = ["std"]
+std = ["mathtex-ir/std", "rustybuzz/std", "ttf-parser/std"]
+
+[dependencies]
+mathtex-ir = { version = "0.1.0", path = "../mathtex-ir", default-features = false }
+once_cell = { version = "1.21.4", default-features = false, features = ["race", "alloc"] }
+rustybuzz = { version = "0.20.1", default-features = false }
+self_cell = "1"
+ttf-parser = { version = "0.25.1", default-features = false, features = [
+    "opentype-layout",
+    "apple-layout",
+    "variable-fonts",
+    "glyph-names",
+    "no-std-float",
+] }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+\left| \langle x, y \rangle \right| \le \|x\| \, \|y\|
+e^{i\pi} + 1 = 0
+\int_{-\infty}^{\infty} e^{-x^2} \, dx = \sqrt{\pi}
+\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}
+\sin^2\theta + \cos^2\theta = 1
+a^2 + b^2 = c^2
+\left( \frac{a}{b} \right)^n = \frac{a^n}{b^n}
+\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}
+\frac{d}{dx} \left( x^2 \right) = 2x
+\lim_{x \to 0} \frac{\sin x}{x} = 1
+\binom{n}{k} = \frac{n!}{k!(n-k)!}
+\frac{\partial f}{\partial x} + \frac{\partial f}{\partial y} = 0
+\left\{ x : x^2 < 2 \right\}
+\cos(\alpha + \beta) = \cos\alpha\cos\beta - \sin\alpha\sin\beta
+\left| x \right| = \sqrt{x^2}
+2x + 3y = 5, \quad 4x - y = 11
+\prod_{k=1}^{n} k = n!
+\frac{x+1}{x-1} \ge \frac{x-1}{x+1}
+\tan\theta = \frac{\sin\theta}{\cos\theta}

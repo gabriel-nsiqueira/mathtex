@@ -1,0 +1,33 @@
+# Rust build outputs, wherever they are (root, generated/*, worktrees)
+target/
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+
+# Bootstrap material: vendored TeX Live clone + regenerable intermediates
+# (regenerate: tools/bootstrap-texlive-web2c-c2rust.sh)
+/vendor/
+/generated/c2rust/
+/generated/web2c/
+
+# wasm-pack build outputs (regenerate: wasm-pack build crates/mathtex-wasm --target nodejs|web)
+/crates/*/pkg-node/
+/crates/*/pkg-web/
+
+# copied wasm + the large regenerable format image (regenerate: node tools/build-format/dump.mjs)
+/web/pkg/
+/web/assets/format.pkg
+/web/assets/*.svg
+
+# Cloudflare Pages local state
+/.wrangler/
+
+# local editor and agent config
+/.claude/
+
+# stray TeX/render outputs from manual runs at the repo root
+/texput.*
+/*.svg

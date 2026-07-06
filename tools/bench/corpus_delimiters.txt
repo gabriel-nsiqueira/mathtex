@@ -1,0 +1,22 @@
+\left(x\right)
+\left[\frac{a}{b}\right]
+|x|
+\langle x\rangle
+\left\{x\right\}
+\big(x\big)
+\left(\left[x\right]\right)
+\left(x+y\right)\left(x-y\right)
+|x|+|y|
+\left|\frac{a}{b}\right|
+\langle x,y\rangle
+\left\{\left[\left(x\right)\right]\right\}
+\big[\big(x\big)\big]
+\left(\frac{a}{b}\right)+\left(\frac{c}{d}\right)
+\Big\langle x\Big\rangle
+\left.\frac{a}{b}\right|
+\lfloor x\rfloor+\lceil y\rceil
+\left(\left(\left(x\right)\right)\right)
+\big|x\big|+\bigg|y\bigg|
+\left(a\left[b\left\{c\right\}d\right]e\right)
+\langle\langle x\rangle\rangle
+|x+|y||

@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/mathtex",
+    "crates/mathtex-svg-cli",
+    "crates/mathtex-engine",
+    "crates/mathtex-font",
+    "crates/mathtex-ir",
+    "crates/mathtex-render",
+    "crates/mathtex-svg",
+    "crates/mathtex-wasm",
+    "generated/portable-engine",
+    "tools/web2c-import",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gabriel-nsiqueira/mathtex"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
