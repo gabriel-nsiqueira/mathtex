@@ -570,3 +570,119 @@ fn leading_skipped_blank_excluded_from_span() {
         "x must map to exactly \"x\" with no absorbed leading blank; got {glyphs:?}"
     );
 }
+
+/// Test platform serving a fixed 5pt x 10pt host box with one glyph for every token.
+struct FixedHostBoxPlatform;
+
+impl mathtex_engine::portable_engine::PortablePlatform for FixedHostBoxPlatform {
+    fn host_box(
+        &mut self,
+        _request: mathtex_engine::portable_engine::PortableHostBoxRequest,
+    ) -> Option<mathtex_engine::portable_engine::PortableHostBox> {
+        Some(mathtex_engine::portable_engine::PortableHostBox {
+            width: 5 * 65536,
+            height: 10 * 65536,
+            depth: 0,
+            runs: vec![mathtex_engine::portable_engine::PortableHostBoxRun {
+                font_name: "HostFont".into(),
+                font_size: 10 * 65536,
+                glyphs: vec![mathtex_engine::portable_engine::PortableHostBoxGlyph {
+                    glyph: 1,
+                    x: 0,
+                    y: 0,
+                    advance: 5 * 65536,
+                }],
+            }],
+            rules: vec![],
+        })
+    }
+}
+
+/// Render with the fixed host box platform attached; mirrors `render_program` otherwise.
+fn render_host_box_program(program: &str) -> Fragment {
+    let mut resources = InMemoryResourceProvider::new();
+    for (name, bytes) in fonts() {
+        resources = resources.with_resource(name, ResourceKind::Font, bytes.to_vec());
+    }
+    let format = GeneratedFormatCache::initialized(EngineProfile::tex());
+    let mut engine = format
+        .instantiate(EngineProfile::tex(), GeneratedResourceProvider::new(resources))
+        .with_platform(FixedHostBoxPlatform);
+
+    engine.set_source_tracking(true);
+    engine.begin_fragment_capture();
+    assert!(
+        engine.begin_primary_input("input", program.as_bytes().to_vec()),
+        "engine refused primary input"
+    );
+    assert!(engine.run_main_control(), "run_main_control failed");
+    engine.end_fragment_capture();
+
+    let root = engine
+        .captured_fragment_root()
+        .expect("engine captured no fragment root");
+    generated_node_to_fragment(
+        &engine,
+        root,
+        FragmentMetadata {
+            engine_profile: "tex".into(),
+            format_id: "source-tracking".into(),
+            fragment_kind: Default::default(),
+        },
+    )
+    .expect("captured root failed to convert to IR")
+}
+
+/// Primary span slices of every box node carrying the fixed host box width.
+fn host_box_atom_slices<'a>(fragment: &'a Fragment, fed: &'a str) -> Vec<&'a str> {
+    fragment
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.kind,
+                LayoutNodeKind::Box(b) if b.metrics.width == mathtex_ir::Length::from_scaled_points(5 * 65536)
+            )
+        })
+        .map(|node| {
+            let range = fragment
+                .primary_source_for_node(node.id)
+                .unwrap_or_else(|| panic!("host box node {:?} has no primary source", node.id));
+            slice(fragment, fed, range)
+        })
+        .collect()
+}
+
+#[test]
+fn host_box_atom_spans_its_own_call_site() {
+    let fed = format!(
+        "{SETUP}\\def\\hostbox#1{{\\Uhostbox #1\\relax}}\\hbox{{$a\\hostbox{{7}}b$}}\\end"
+    );
+    let fragment = render_host_box_program(&fed);
+    let slices = host_box_atom_slices(&fragment, &fed);
+    assert!(!slices.is_empty(), "host box atom must be present");
+    for text in &slices {
+        assert!(
+            text.starts_with("\\hostbox"),
+            "host box atom must map to its \\hostbox call site, got {text:?}"
+        );
+    }
+}
+
+#[test]
+fn host_box_atom_span_survives_script_field_copy() {
+    // The single atom script group copies the placeholder into the field word, the resolved box
+    // must still map to the \hostbox bytes rather than the enclosing script construct.
+    let fed = format!(
+        "{SETUP}\\def\\hostbox#1{{\\Uhostbox #1\\relax}}\\hbox{{$x^{{\\hostbox{{7}}}}$}}\\end"
+    );
+    let fragment = render_host_box_program(&fed);
+    let slices = host_box_atom_slices(&fragment, &fed);
+    assert!(!slices.is_empty(), "host box atom must be present");
+    for text in &slices {
+        assert!(
+            text.starts_with("\\hostbox"),
+            "script host box atom must map to its \\hostbox call site, got {text:?}"
+        );
+    }
+}

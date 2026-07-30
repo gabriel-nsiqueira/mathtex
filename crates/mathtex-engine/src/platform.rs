@@ -24,6 +24,11 @@ pub trait Platform {
     fn linebreak_next(&self) -> Option<i32> {
         None
     }
+
+    /// Returns the box for a host owned token, or `None` to typeset a zero size box.
+    fn host_box(&self, _request: HostBoxRequest) -> Option<HostBox> {
+        None
+    }
 }
 
 impl<T> Platform for &T
@@ -48,6 +53,10 @@ where
 
     fn linebreak_next(&self) -> Option<i32> {
         (*self).linebreak_next()
+    }
+
+    fn host_box(&self, request: HostBoxRequest) -> Option<HostBox> {
+        (*self).host_box(request)
     }
 }
 
@@ -117,6 +126,80 @@ pub struct LinebreakRequest<'a> {
     pub locale: i32,
     /// Text slice owned by generated engine memory for this call.
     pub text: &'a [u16],
+}
+
+/// Style context a host box is placed in, display math collapses to text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostBoxStyle {
+    /// Text and display math style.
+    Text,
+    /// First level script style.
+    Script,
+    /// Second level script style.
+    ScriptScript,
+}
+
+/// Parameters for a host box request passed to the platform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostBoxRequest {
+    /// Opaque host owned token identifier scanned from `\hostbox{...}`.
+    pub token: i32,
+    /// Math style context at the placement site.
+    pub style: HostBoxStyle,
+    /// Font size context in scaled points at the placement site.
+    pub font_size: i32,
+}
+
+/// A glyph inside a host box, offsets in scaled points from the box baseline origin, y down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostBoxGlyph {
+    /// Glyph identifier in the run's font.
+    pub glyph: u16,
+    /// Horizontal offset from the box baseline origin.
+    pub x: i32,
+    /// Vertical offset from the baseline, positive downward.
+    pub y: i32,
+    /// Horizontal advance in scaled points.
+    pub advance: i32,
+}
+
+/// One same font glyph sequence inside a host box.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostBoxRun {
+    /// Host font name carried into the fragment's glyph run.
+    pub font_name: String,
+    /// Font size for the run in scaled points.
+    pub font_size: i32,
+    /// Glyphs of the run in visual order.
+    pub glyphs: Vec<HostBoxGlyph>,
+}
+
+/// A rule inside a host box, `(x, y)` is the bottom left corner, y down from the baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostBoxRule {
+    /// Horizontal offset of the rule's left edge from the box baseline origin.
+    pub x: i32,
+    /// Vertical offset of the rule's bottom edge, positive downward.
+    pub y: i32,
+    /// Rule width in scaled points.
+    pub width: i32,
+    /// Rule height in scaled points, extending upward from `y`.
+    pub height: i32,
+}
+
+/// Host supplied box for one `\hostbox` token: metrics plus render data for the fragment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostBox {
+    /// Box width in scaled points.
+    pub width: i32,
+    /// Box height above the baseline in scaled points.
+    pub height: i32,
+    /// Box depth below the baseline in scaled points.
+    pub depth: i32,
+    /// Glyph runs rendered inside the box.
+    pub runs: Vec<HostBoxRun>,
+    /// Rules rendered inside the box.
+    pub rules: Vec<HostBoxRule>,
 }
 
 /// Signals that a host configured resource limit was exceeded.

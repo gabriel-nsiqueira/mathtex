@@ -11,7 +11,7 @@ use mathtex_ir::{
     PositionedGlyph, Rect, Rule, Size, SourceRange, SourceRole, Style, Surface,
 };
 
-use crate::platform::{LinebreakRequest, Platform};
+use crate::platform::{HostBoxRequest, HostBoxStyle, LinebreakRequest, Platform};
 use crate::resource::{ResourceKind, ResourceProvider, ResourceRequest as EngineResourceRequest};
 
 /// Reexport of the portable engine node handle type.
@@ -98,6 +98,15 @@ pub type GeneratedClock = mathtex_portable_engine_generated::PortableClock;
 pub type GeneratedLinebreakRequest<'a> =
     mathtex_portable_engine_generated::PortableLinebreakRequest<'a>;
 
+/// Reexport of the portable engine host box request type.
+pub type GeneratedHostBoxRequest = mathtex_portable_engine_generated::PortableHostBoxRequest;
+
+/// Reexport of the portable engine host box style type.
+pub type GeneratedHostBoxStyle = mathtex_portable_engine_generated::PortableHostBoxStyle;
+
+/// Reexport of the portable engine host box response type.
+pub type GeneratedHostBox = mathtex_portable_engine_generated::PortableHostBox;
+
 /// Adapts a [`Platform`] to the portable engine's `PortablePlatform` interface.
 #[derive(Clone, Copy, Debug)]
 pub struct GeneratedPlatformAdapter<P> {
@@ -146,6 +155,52 @@ where
 
     fn linebreak_next(&mut self) -> Option<i32> {
         self.platform.linebreak_next()
+    }
+
+    fn host_box(&mut self, request: GeneratedHostBoxRequest) -> Option<GeneratedHostBox> {
+        let style = match request.style {
+            GeneratedHostBoxStyle::Text => HostBoxStyle::Text,
+            GeneratedHostBoxStyle::Script => HostBoxStyle::Script,
+            GeneratedHostBoxStyle::ScriptScript => HostBoxStyle::ScriptScript,
+        };
+        let response = self.platform.host_box(HostBoxRequest {
+            token: request.token,
+            style,
+            font_size: request.font_size,
+        })?;
+        Some(GeneratedHostBox {
+            width: response.width,
+            height: response.height,
+            depth: response.depth,
+            runs: response
+                .runs
+                .into_iter()
+                .map(|run| mathtex_portable_engine_generated::PortableHostBoxRun {
+                    font_name: run.font_name,
+                    font_size: run.font_size,
+                    glyphs: run
+                        .glyphs
+                        .into_iter()
+                        .map(|glyph| mathtex_portable_engine_generated::PortableHostBoxGlyph {
+                            glyph: glyph.glyph,
+                            x: glyph.x,
+                            y: glyph.y,
+                            advance: glyph.advance,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            rules: response
+                .rules
+                .into_iter()
+                .map(|rule| mathtex_portable_engine_generated::PortableHostBoxRule {
+                    x: rule.x,
+                    y: rule.y,
+                    width: rule.width,
+                    height: rule.height,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -778,11 +833,16 @@ pub fn generated_node_to_fragment(
     builder.finish_with_root(root_node)
 }
 
+/// Host fonts get ids from this base upward so they never collide with engine font numbers.
+const HOST_FONT_ID_BASE: u32 = 0x8000_0000;
+
 struct GeneratedIrBuilder<'a, 'resources> {
     engine: &'a mathtex_portable_engine_generated::PortableTexEngine<'resources>,
     fragment: Fragment,
     next_node: u32,
     visits_remaining: usize,
+    /// Host font name to synthetic `FontId` interning, one id per distinct name.
+    host_font_ids: BTreeMap<String, u32>,
 }
 
 impl<'a, 'resources> GeneratedIrBuilder<'a, 'resources> {
@@ -798,7 +858,13 @@ impl<'a, 'resources> GeneratedIrBuilder<'a, 'resources> {
             },
             next_node: 0,
             visits_remaining: 16_384,
+            host_font_ids: BTreeMap::new(),
         }
+    }
+
+    fn host_font_id(&mut self, name: &str) -> FontId {
+        let next = HOST_FONT_ID_BASE.saturating_add(self.host_font_ids.len() as u32);
+        FontId(*self.host_font_ids.entry(name.into()).or_insert(next))
     }
 
     fn finish_with_root(mut self, root: NodeId) -> Option<Fragment> {
@@ -905,9 +971,111 @@ impl<'a, 'resources> GeneratedIrBuilder<'a, 'resources> {
             GeneratedNodeKind::NativeWord | GeneratedNodeKind::NativeGlyph => {
                 Some(self.emit_native_glyph_run(snapshot, origin))
             }
+            GeneratedNodeKind::HostBoxRef => self.emit_host_box(snapshot, origin),
             GeneratedNodeKind::OutputWhatsit => None,
             _ => None,
         }
+    }
+
+    /// Expands a host box marker into a box holding the host supplied glyph runs and rules.
+    fn emit_host_box(&mut self, snapshot: GeneratedNodeSnapshot, origin: Point) -> Option<NodeId> {
+        let record = self
+            .engine
+            .host_box_record(usize::try_from(snapshot.character).ok()?)?
+            .clone();
+        let mut children = Vec::new();
+        for run in &record.runs {
+            let glyphs = run
+                .glyphs
+                .iter()
+                .map(|glyph| PositionedGlyph {
+                    glyph_id: GlyphId(u32::from(glyph.glyph)),
+                    offset: Point {
+                        x: Length::from_scaled_points(glyph.x),
+                        y: Length::from_scaled_points(glyph.y),
+                    },
+                    advance: Point {
+                        x: Length::from_scaled_points(glyph.advance),
+                        y: Length::ZERO,
+                    },
+                    cluster: None,
+                })
+                .collect();
+            // Host fonts have no engine font table entry, so intern the name to a synthetic id.
+            let font_id = self.host_font_id(&run.font_name);
+            let child = self.push_host_box_child(
+                Point::default(),
+                Size {
+                    width: Length::from_scaled_points(record.width),
+                    height: Length::from_scaled_points(record.height + record.depth),
+                },
+                LayoutNodeKind::GlyphRun(GlyphRun {
+                    font: FontRef {
+                        id: font_id,
+                        name: run.font_name.clone(),
+                        size: Length::from_scaled_points(run.font_size),
+                        features: Vec::new(),
+                    },
+                    direction: Direction::LeftToRight,
+                    script: None,
+                    language: None,
+                    glyphs,
+                }),
+            );
+            children.push(child);
+        }
+        for rule in &record.rules {
+            let child = self.push_host_box_child(
+                Point {
+                    x: Length::from_scaled_points(rule.x),
+                    y: Length::from_scaled_points(rule.y),
+                },
+                Size {
+                    width: Length::from_scaled_points(rule.width),
+                    height: Length::from_scaled_points(rule.height),
+                },
+                LayoutNodeKind::Rule(Rule {
+                    size: Size {
+                        width: Length::from_scaled_points(rule.width),
+                        height: Length::from_scaled_points(rule.height),
+                    },
+                    color: Default::default(),
+                }),
+            );
+            children.push(child);
+        }
+        Some(self.emit(
+            &snapshot,
+            origin,
+            LayoutNodeKind::Box(LayoutBox {
+                kind: BoxKind::Horizontal,
+                metrics: BoxMetrics {
+                    width: Length::from_scaled_points(record.width),
+                    height: Length::from_scaled_points(record.height),
+                    depth: Length::from_scaled_points(record.depth),
+                    shift: Length::ZERO,
+                },
+                children,
+            }),
+        ))
+    }
+
+    /// Pushes one host box child node, source coverage comes from the enclosing box.
+    fn push_host_box_child(&mut self, origin: Point, size: Size, kind: LayoutNodeKind) -> NodeId {
+        let id = NodeId(self.next_node);
+        self.next_node += 1;
+        self.fragment.nodes.push(LayoutNode {
+            id,
+            origin,
+            bounds: Rect {
+                origin: Point::default(),
+                size,
+            },
+            primary_source: None,
+            style: Style::default(),
+            kind,
+        });
+        id
     }
 
     fn emit_native_glyph_run(&mut self, snapshot: GeneratedNodeSnapshot, origin: Point) -> NodeId {

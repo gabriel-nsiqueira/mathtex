@@ -16,7 +16,7 @@ use mathtex_engine::{
 use wasm_bindgen::prelude::*;
 
 /// LaTeX + amsmath + unicode-math preamble ending with `\dump`, used to build the packaged format.
-const PREAMBLE: &[u8] = br"\nonstopmode\documentclass{article}\usepackage{amsmath}\usepackage{unicode-math}\setmathfont{latinmodern-math.otf}\begin{document}\dump";
+const PREAMBLE: &[u8] = br"\nonstopmode\documentclass{article}\usepackage{amsmath}\usepackage{unicode-math}\setmathfont{latinmodern-math.otf}\def\hostbox#1{\Uhostbox #1\relax}\begin{document}\dump";
 
 /// Extracts a bare font filename from a XeTeX `\font` spec.
 fn font_filename(spec: &str) -> String {

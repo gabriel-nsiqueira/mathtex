@@ -18,9 +18,11 @@ pub use runtime::memory_word_bytes;
 pub use runtime::{
     EmptyFontPlatform, EmptyPlatform, EmptyResourceProvider, EngineProfile, EngineProfileKind,
     FontPlatform, GlyphAssembly, PortableClock, PortableFontHandle, PortableFontMetrics,
-    PortableFormatImage, PortableLinebreakRequest, PortableMathAssemblyPart, PortableMathKernCorner,
-    PortableMathVariant, PortableNativeGlyph, PortableNativeGlyphMetrics, PortableNativeTextMetrics,
-    PortableNodeHandle, PortableNodeKind, PortableNodeSnapshot, PortableNodeSourceSpan,
-    PortablePlatform, PortableResourceRequestRecord, PortableSourceSpan, PortableTexEngine,
-    ResourceKind, ResourceProvider, ResourceRequest,
+    PortableFormatImage, PortableHostBox, PortableHostBoxGlyph, PortableHostBoxRequest,
+    PortableHostBoxRule, PortableHostBoxRun, PortableHostBoxStyle, PortableLinebreakRequest,
+    PortableMathAssemblyPart, PortableMathKernCorner, PortableMathVariant, PortableNativeGlyph,
+    PortableNativeGlyphMetrics, PortableNativeTextMetrics, PortableNodeHandle, PortableNodeKind,
+    PortableNodeSnapshot, PortableNodeSourceSpan, PortablePlatform,
+    PortableResourceRequestRecord, PortableSourceSpan, PortableTexEngine, ResourceKind,
+    ResourceProvider, ResourceRequest,
 };

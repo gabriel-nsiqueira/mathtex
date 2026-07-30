@@ -517,6 +517,13 @@ impl<'resources> PortableTexEngine<'resources> {
                 (*eqtb.offset(7892345 as i64 as isize)).u.CINT = i;
                 (*eqtb.offset(7892346 as i64 as isize)).u.CINT = j;
             }
+            91 => {
+                (&mut *(self as *mut PortableTexEngine<'_>)).scanint()?;
+                Self::host_box_insert(
+                    self as *mut PortableTexEngine<'_>,
+                    self.state.curval,
+                )?;
+            }
             46 => {
                 (&mut *(self as *mut PortableTexEngine<'_>)).scanfilename()?;
                 if (&mut *(self as *mut PortableTexEngine<'_>))

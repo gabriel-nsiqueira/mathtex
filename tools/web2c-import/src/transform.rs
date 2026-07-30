@@ -246,6 +246,13 @@ pub(crate) fn patch_node_source_recording(mut source: String, function_name: &st
                 "while q as i64 != -(268435455 as i64) {\n        loop {\n            delta_0 = 0 as i32 as scaled;",
                 "while q as i64 != -(268435455 as i64) {\n        Self::src_mlist_repoint(self as *mut PortableTexEngine<'_>, q);\n        loop {\n            delta_0 = 0 as i32 as scaled;",
             );
+            // Host box hook: resolve pending \Uhostbox placeholders here, where cur_style is known.
+            replace_once(
+                &mut source,
+                function_name,
+                "Self::src_mlist_repoint(self as *mut PortableTexEngine<'_>, q);\n        loop {",
+                "Self::src_mlist_repoint(self as *mut PortableTexEngine<'_>, q);\n        Self::host_box_resolve_noad(self as *mut PortableTexEngine<'_>, q);\n        loop {",
+            );
             // Carry a field leaf char span onto the glyph node after `make_ord` attaches it.
             replace_once(
                 &mut source,
@@ -261,6 +268,13 @@ pub(crate) fn patch_node_source_recording(mut source: String, function_name: &st
                 function_name,
                 "pub(crate) unsafe fn zcleanbox(&mut self, mut p: halfword, mut s: smallnumber) -> halfword {",
                 "pub(crate) unsafe fn zcleanbox(&mut self, mut p: halfword, mut s: smallnumber) -> halfword {\n        let __src_saved_cmd_span: u32 = Self::src_save_cmd_span(self as *mut PortableTexEngine<'_>);",
+            );
+            // Host box hook: fields copied out of single atom groups resolve here with style `s`.
+            replace_once(
+                &mut source,
+                function_name,
+                "let __src_saved_cmd_span: u32 = Self::src_save_cmd_span(self as *mut PortableTexEngine<'_>);",
+                "let __src_saved_cmd_span: u32 = Self::src_save_cmd_span(self as *mut PortableTexEngine<'_>);\n        Self::host_box_resolve_field(self as *mut PortableTexEngine<'_>, p, s as i32);",
             );
             replace_once(
                 &mut source,
@@ -392,6 +406,8 @@ pub(crate) fn patch_node_source_recording(mut source: String, function_name: &st
                 "(*mem.offset(q as isize)).hh.v.RH = r;\n        q = r;\n        p = (*mem.offset(p as isize)).hh.v.RH;",
                 "Self::src_carry_copy(self as *mut PortableTexEngine<'_>, p, r);\n        (*mem.offset(q as isize)).hh.v.RH = r;\n        q = r;\n        p = (*mem.offset(p as isize)).hh.v.RH;",
             );
+            // Host box markers (whatsit subtypes 91/92) copy as plain size 2 whatsits.
+            replace_at_most_once(&mut source, function_name, "2 | 5 => {", "2 | 5 | 91 | 92 => {");
         }
         // Replace the WEB `src_token_copy` marker with a real token span carry.
         "zsrctokencopy" => {
@@ -456,6 +472,19 @@ pub(crate) fn patch_node_source_recording(mut source: String, function_name: &st
                 "(*mem.offset((self.state.curbox as i32 + 4 as i32) as isize))\n                .u\n                .CINT = boxcontext;",
                 "(*mem.offset((self.state.curbox as i32 + 4 as i32) as isize))\n                .u\n                .CINT = boxcontext;\n            if Self::boundary_capture_fragment_box(\n                self as *mut PortableTexEngine<'_>,\n                self.state.curbox,\n                self.state.curlist.modefield as integer,\n                boxcontext,\n            ) != 0\n            {\n                return;\n            }",
             );
+        }
+        // Host box hook: \Uhostbox scans its token id, the anchor is XeTeX only so base stays unpatched.
+        "doextension" => {
+            replace_at_most_once(
+                &mut source,
+                function_name,
+                "        46 => {",
+                "        91 => {\n            (&mut *(self as *mut PortableTexEngine<'_>)).scanint();\n            Self::host_box_insert(\n                self as *mut PortableTexEngine<'_>,\n                self.state.curval,\n            );\n        }\n        46 => {",
+            );
+        }
+        // Host box markers (whatsit subtypes 91/92) free as plain size 2 whatsits.
+        "zflushnodelist" => {
+            replace_at_most_once(&mut source, function_name, "2 | 5 => {", "2 | 5 | 91 | 92 => {");
         }
         "zlinebreak" => {
             source = source.replace(

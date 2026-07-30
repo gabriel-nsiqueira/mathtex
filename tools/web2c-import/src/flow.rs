@@ -118,6 +118,9 @@ const HAND_EDITED_BRIDGE_FUNCTIONS: &[&str] = &[
     "sandbox_open_math",
     "sandbox_close_math",
     "sandbox_tick",
+    "host_box_insert",
+    "host_box_resolve_noad",
+    "host_box_resolve_field",
 ];
 
 #[derive(Clone, Copy)]

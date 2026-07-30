@@ -580,6 +580,65 @@ pub struct PortableLinebreakRequest<'a> {
     pub text: &'a [uint16_t],
 }
 
+// Style context for a host box request, display math collapses to Text to match cursize.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortableHostBoxStyle {
+    Text,
+    Script,
+    ScriptScript,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableHostBoxRequest {
+    pub token: integer,
+    pub style: PortableHostBoxStyle,
+    pub font_size: scaled,
+}
+
+// Glyph offsets are scaled points from the box baseline origin, y positive downward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableHostBoxGlyph {
+    pub glyph: u16,
+    pub x: scaled,
+    pub y: scaled,
+    pub advance: scaled,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortableHostBoxRun {
+    pub font_name: String,
+    pub font_size: scaled,
+    pub glyphs: Vec<PortableHostBoxGlyph>,
+}
+
+// Rule origin is its bottom left corner with y positive downward, height extends upward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableHostBoxRule {
+    pub x: scaled,
+    pub y: scaled,
+    pub width: scaled,
+    pub height: scaled,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PortableHostBox {
+    pub width: scaled,
+    pub height: scaled,
+    pub depth: scaled,
+    pub runs: Vec<PortableHostBoxRun>,
+    pub rules: Vec<PortableHostBoxRule>,
+}
+
+// \Uhostbox is extension cmd 59 with this chr, upstream extension codes stop at 46.
+pub(crate) const HOST_BOX_EXTENSION_CODE: i32 = 91;
+// Marker whatsit subtypes: pending carries the opaque token id, resolved carries a record index.
+pub(crate) const HOST_BOX_PENDING_SUBTYPE: i16 = 91;
+pub(crate) const HOST_BOX_RESOLVED_SUBTYPE: i16 = 92;
+// eqtb slot of the current font in this import's layout (see the mainf reads in maincontrol).
+pub(crate) const EQTB_CUR_FONT_LOC: i64 = 1206823;
+// eqtb base of the family 2 math symbol fonts, indexed by size 0/256/512 (see zmathquad).
+pub(crate) const EQTB_MATH_FONT_FAM2_BASE: i64 = 1206826;
+
 pub trait PortablePlatform {
     fn clock(&mut self) -> PortableClock {
         PortableClock::default()
@@ -588,6 +647,10 @@ pub trait PortablePlatform {
     fn linebreak_start(&mut self, _request: PortableLinebreakRequest<'_>) {}
 
     fn linebreak_next(&mut self) -> Option<integer> {
+        None
+    }
+
+    fn host_box(&mut self, _request: PortableHostBoxRequest) -> Option<PortableHostBox> {
         None
     }
 }
@@ -2397,6 +2460,7 @@ pub enum PortableNodeKind {
     Character,
     NativeWord,
     NativeGlyph,
+    HostBoxRef,
     Unknown(i32),
 }
 
@@ -2502,6 +2566,8 @@ pub struct PortableTexEngine<'resources> {
     pub(crate) platform: Box<dyn PortablePlatform + 'resources>,
     pub(crate) nameoffile_storage: Vec<UTF8code>,
     native_glyph_infos: std::collections::BTreeMap<i32, PortableNativeGlyphInfo>,
+    // Host box render payloads by record index, markers in node memory carry only the index.
+    hostbox_records: Vec<PortableHostBox>,
     character_protrusions: std::collections::BTreeMap<(integer, u32, integer), integer>,
     pub(crate) resource_requests: usize,
     pub(crate) resource_request_records: Vec<PortableResourceRequestRecord>,
@@ -2568,6 +2634,7 @@ impl<'resources> PortableTexEngine<'resources> {
             platform: Box::<EmptyPlatform>::default(),
             nameoffile_storage: Vec::new(),
             native_glyph_infos: std::collections::BTreeMap::new(),
+            hostbox_records: Vec::new(),
             character_protrusions: std::collections::BTreeMap::new(),
             resource_requests: 0,
             resource_request_records: Vec::new(),
@@ -2633,6 +2700,7 @@ impl<'resources> PortableTexEngine<'resources> {
             engine.initprim()?;
             engine.init_etex_startup_primitives()?;
             engine.init_xetex_startup_primitives()?;
+            engine.register_host_box_primitive()?;
             engine.state.initstrptr = engine.state.strptr;
             engine.state.initpoolptr = engine.state.poolptr;
             // Inter-element math spacing offset. The original computes this in
@@ -2698,6 +2766,8 @@ impl<'resources> PortableTexEngine<'resources> {
     pub fn begin_fragment_capture(self: &mut Self) {
         self.fragment_capture_enabled = true;
         self.captured_fragment_root = None;
+        // Record indices in marker nodes are per fragment, a reused engine must not accumulate.
+        self.hostbox_records.clear();
     }
 
     pub fn end_fragment_capture(self: &mut Self) {
@@ -2856,6 +2926,11 @@ impl<'resources> PortableTexEngine<'resources> {
         self.captured_fragment_root
     }
 
+    /// Host box render payload by record index, as referenced by `HostBoxRef` marker nodes.
+    pub fn host_box_record(&self, index: usize) -> Option<&PortableHostBox> {
+        self.hostbox_records.get(index)
+    }
+
     /// At-size (scaled points) a font was loaded at, by internal font number.
     /// Used by the IR builder to carry the real glyph-run font size.
     pub fn font_at_size(&self, font: integer) -> integer {
@@ -2969,6 +3044,9 @@ impl<'resources> PortableTexEngine<'resources> {
         };
         let character = if is_character {
             subtype
+        } else if matches!(kind, PortableNodeKind::HostBoxRef) {
+            // Host box markers carry their record index in the payload word.
+            self.node_word(node, 1).map_or(0, |word| unsafe { word.u.CINT })
         } else {
             native_word4.map_or(0, |word| unsafe { word.v.QQQQ.u.B2 as i32 })
         };
@@ -3097,6 +3175,7 @@ impl<'resources> PortableTexEngine<'resources> {
             7 => PortableNodeKind::Discretionary,
             8 if matches!(subtype, 40 | 41) => PortableNodeKind::NativeWord,
             8 if subtype == 42 => PortableNodeKind::NativeGlyph,
+            8 if subtype == HOST_BOX_RESOLVED_SUBTYPE as i32 => PortableNodeKind::HostBoxRef,
             8 if matches!(subtype, 0 | 1 | 2 | 3) => PortableNodeKind::OutputWhatsit,
             8 => PortableNodeKind::Whatsit,
             9 => PortableNodeKind::Math,
@@ -4239,6 +4318,190 @@ impl<'resources> PortableTexEngine<'resources> {
             .as_mut()
             .and_then(|engine| engine.platform.linebreak_next())
             .unwrap_or(-1)
+    }
+
+    // Registers \Uhostbox during format initialization so it dumps with the format eqtb and hash.
+    pub(crate) unsafe fn register_host_box_primitive(self: &mut Self) -> EngineFlow<()> {
+        let eqtb = self.state.zeqtb.as_mut_ptr();
+        let name = b"Uhostbox";
+        for (index, byte) in name.iter().enumerate() {
+            *self.state.buffer.offset(index as isize) = *byte as UnicodeScalar;
+        }
+        let saved = self.state.nonewcontrolsequence;
+        self.state.nonewcontrolsequence = 0 as boolean;
+        let cs = (&mut *(self as *mut PortableTexEngine<'_>))
+            .zidlookup(0 as integer, name.len() as integer)?;
+        self.state.nonewcontrolsequence = saved;
+        // eq_level one, eq_type extension (59), equiv = the host box extension chr code.
+        (*eqtb.offset(cs as isize)).hh.u.B1 = 1 as i16;
+        (*eqtb.offset(cs as isize)).hh.u.B0 = 59 as i16;
+        (*eqtb.offset(cs as isize)).hh.v.RH = HOST_BOX_EXTENSION_CODE as halfword;
+        Ok(())
+    }
+
+    // Allocates a size 2 marker whatsit whose payload is a pending token id or a resolved record index.
+    unsafe fn host_box_marker(
+        engine: *mut PortableTexEngine<'_>,
+        subtype: i16,
+        payload: integer,
+    ) -> EngineFlow<halfword> {
+        let this = &mut *engine;
+        let marker = this.zgetnode(2 as i32)?;
+        let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+        (*mem.offset(marker as isize)).hh.u.B0 = 8 as i16;
+        (*mem.offset(marker as isize)).hh.u.B1 = subtype;
+        (*mem.offset(marker as isize)).hh.v.RH = -(268435455 as i64) as halfword;
+        (*mem.offset((marker as i32 + 1 as i32) as isize)).u.CINT = payload;
+        Ok(marker)
+    }
+
+    // Asks the host for the box behind `token`, None falls back to a deterministic zero size box.
+    unsafe fn host_box_build(
+        engine: *mut PortableTexEngine<'_>,
+        token: integer,
+        style: PortableHostBoxStyle,
+        font_size: scaled,
+    ) -> EngineFlow<halfword> {
+        let this = &mut *engine;
+        let response = this.platform.host_box(PortableHostBoxRequest {
+            token,
+            style,
+            font_size,
+        });
+        let hbox = this.newnullbox()?;
+        let Some(host_box) = response else {
+            return Ok(hbox);
+        };
+        let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+        (*mem.offset((hbox as i32 + 1 as i32) as isize)).u.CINT = host_box.width;
+        (*mem.offset((hbox as i32 + 2 as i32) as isize)).u.CINT = host_box.depth;
+        (*mem.offset((hbox as i32 + 3 as i32) as isize)).u.CINT = host_box.height;
+        let index = this.hostbox_records.len();
+        this.hostbox_records.push(host_box);
+        let marker =
+            Self::host_box_marker(engine, HOST_BOX_RESOLVED_SUBTYPE, index as integer)?;
+        (*mem.offset((hbox as i32 + 5 as i32) as isize)).hh.v.RH = marker;
+        Ok(hbox)
+    }
+
+    // \Uhostbox scan site: math defers to the mlist pass for style, other modes resolve now as Text.
+    pub(crate) unsafe fn host_box_insert(
+        engine: *mut PortableTexEngine<'_>,
+        token: integer,
+    ) -> EngineFlow<()> {
+        let Some(this) = engine.as_mut() else {
+            return Ok(());
+        };
+        let mode = (this.state.curlist.modefield as i32).abs();
+        if mode == 209 as i32 {
+            let marker =
+                Self::host_box_marker(engine, HOST_BOX_PENDING_SUBTYPE, token)?;
+            let this = &mut *engine;
+            let placeholder = this.newnullbox()?;
+            let noad = this.newnoad()?;
+            let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+            (*mem.offset((placeholder as i32 + 5 as i32) as isize)).hh.v.RH = marker;
+            (*mem.offset((noad as i32 + 1 as i32) as isize)).hh.v.RH = 2 as i32 as halfword;
+            (*mem.offset((noad as i32 + 1 as i32) as isize)).hh.v.LH = placeholder;
+            (*mem.offset(this.state.curlist.tailfield as isize)).hh.v.RH = noad;
+            this.state.curlist.tailfield = noad;
+        } else {
+            let eqtb = this.state.zeqtb.as_mut_ptr();
+            let font = (*eqtb.offset(EQTB_CUR_FONT_LOC as isize)).hh.v.RH as integer;
+            let font_size = this.font_at_size(font);
+            let hbox =
+                Self::host_box_build(engine, token, PortableHostBoxStyle::Text, font_size)?;
+            let this = &mut *engine;
+            let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+            (*mem.offset(this.state.curlist.tailfield as isize)).hh.v.RH = hbox;
+            this.state.curlist.tailfield = hbox;
+        }
+        Ok(())
+    }
+
+    // mlist pass hook: swap a pending placeholder nucleus for the host's box under curstyle.
+    pub(crate) unsafe fn host_box_resolve_noad(
+        engine: *mut PortableTexEngine<'_>,
+        q: halfword,
+    ) -> EngineFlow<()> {
+        let Some(this) = engine.as_mut() else {
+            return Ok(());
+        };
+        if q < 0 || q >= this.state.himemmin {
+            return Ok(());
+        }
+        let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+        // Only Ord noads (16) carry a \Uhostbox placeholder nucleus.
+        if (*mem.offset(q as isize)).hh.u.B0 as i32 != 16 as i32 {
+            return Ok(());
+        }
+        let style_code = this.state.curstyle as i32;
+        Self::host_box_resolve_field(engine, (q as i32 + 1 as i32) as halfword, style_code)
+    }
+
+    // clean_box hook: fields copied out of single atom groups (scripts, fractions) resolve here.
+    pub(crate) unsafe fn host_box_resolve_field(
+        engine: *mut PortableTexEngine<'_>,
+        field: halfword,
+        style_code: i32,
+    ) -> EngineFlow<()> {
+        let Some(this) = engine.as_mut() else {
+            return Ok(());
+        };
+        if field < 0 {
+            return Ok(());
+        }
+        let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+        // Field must be a sub box (2) whose box wraps a pending marker whatsit.
+        if (*mem.offset(field as isize)).hh.v.RH as i32 != 2 as i32 {
+            return Ok(());
+        }
+        let placeholder = (*mem.offset(field as isize)).hh.v.LH;
+        if placeholder < 0 || placeholder as i64 == -(268435455 as i64) {
+            return Ok(());
+        }
+        let marker = (*mem.offset((placeholder as i32 + 5 as i32) as isize)).hh.v.RH;
+        if marker < 0 || marker as i64 == -(268435455 as i64) || marker >= this.state.himemmin {
+            return Ok(());
+        }
+        if (*mem.offset(marker as isize)).hh.u.B0 as i32 != 8 as i32
+            || (*mem.offset(marker as isize)).hh.u.B1 as i32 != HOST_BOX_PENDING_SUBTYPE as i32
+        {
+            return Ok(());
+        }
+        let token = (*mem.offset((marker as i32 + 1 as i32) as isize)).u.CINT;
+        // Style codes map to sizes as in mlist_to_hlist: below 4 is text, then script sizes.
+        let size = if style_code < 4 {
+            0
+        } else {
+            256 * ((style_code - 2) / 2)
+        };
+        let style = match size {
+            0 => PortableHostBoxStyle::Text,
+            256 => PortableHostBoxStyle::Script,
+            _ => PortableHostBoxStyle::ScriptScript,
+        };
+        // Size context comes from the family 2 symbol font at the active math size.
+        let eqtb = this.state.zeqtb.as_mut_ptr();
+        let font = (*eqtb.offset((EQTB_MATH_FONT_FAM2_BASE + size as i64) as isize))
+            .hh
+            .v
+            .RH as integer;
+        let font_size = this.font_at_size(font);
+        let hbox = Self::host_box_build(engine, token, style, font_size)?;
+        // The placeholder was stamped with the \hostbox call site span at scan time, carry it onto
+        // the replacement and its marker so the atom maps to its own bytes, not the ambient span.
+        Self::src_carry_copy(engine as *mut Self, placeholder, hbox);
+        let mem: *mut memoryword = (*engine).state.zmem.as_mut_ptr();
+        let resolved_marker = (*mem.offset((hbox as i32 + 5 as i32) as isize)).hh.v.RH;
+        if resolved_marker >= 0 && resolved_marker as i64 != -(268435455 as i64) {
+            Self::src_carry_copy(engine as *mut Self, placeholder, resolved_marker);
+        }
+        (&mut *engine).zflushnodelist(placeholder)?;
+        let this = &mut *engine;
+        let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
+        (*mem.offset(field as isize)).hh.v.LH = hbox;
+        Ok(())
     }
 
     pub(crate) unsafe fn abort_engine(

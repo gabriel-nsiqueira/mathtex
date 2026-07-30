@@ -3898,6 +3898,7 @@ impl<'resources> PortableTexEngine<'resources> {
             );
         while q as i64 != -(268435455 as i64) {
             Self::src_mlist_repoint(self as *mut PortableTexEngine<'_>, q);
+            Self::host_box_resolve_noad(self as *mut PortableTexEngine<'_>, q)?;
             loop {
                 delta_0 = 0 as i32 as scaled;
                 match (*mem.offset(q as isize)).hh.u.B0 as i32 {

@@ -67,7 +67,7 @@ Total compared symbols: 411.
 | deletelast | etex+xetex | etex=e63adb388cc2bde9 xetex=e5d89c2fa576b165 | SmallGuardedBehavior | UseXetex | none | - |
 | doassignments | etex+xetex | etex=a02899dae85dca2d xetex=68ba2e1642540c8e | OnlyConstantsDiffer | UseXetex | none | - |
 | doendv | etex+xetex | etex=1eaea66ba44c694f xetex=8c9270a826403acd | SmallGuardedBehavior | UseXetex | none | - |
-| doextension | etex+xetex | etex=9fe4ad42bbeebe12 xetex=ca2c34dbeb33d8c1 | HostBoundaryDifference | UseXetex | setinputfileencoding | - |
+| doextension | etex+xetex | etex=9fe4ad42bbeebe12 xetex=17ee249536dafeec | HostBoundaryDifference | UseXetex | setinputfileencoding | - |
 | endfilereading | etex+xetex | etex=94b75bd8466d2dfa xetex=0a06dca2fb7a86ee | HostBoundaryDifference | UseXetex | u_close_file_or_pipe | - |
 | endgraf | etex+xetex | etex=afc9dee070f4fc58 xetex=4a43f7060b73e71b | OnlyConstantsDiffer | UseXetex | none | - |
 | endname | etex+xetex | etex=7966ff4a78dde3a2 xetex=ffcfbaf36a2d652b | LargeSemanticDivergence | UseXetex | none | - |
@@ -123,7 +123,7 @@ Total compared symbols: 411.
 | mathlimitswitch | etex+xetex | etex=814765180e9761d2 xetex=83aefbad81cd20f4 | LargeSemanticDivergence | UseXetex | none | - |
 | mathradical | etex+xetex | etex=539470b94828f81b xetex=539470b94828f81b | IdenticalAfterNormalization | UseBase | none | - |
 | maxhyphenatablelength | xetex | xetex=f3820eba66fba7c8 | IdenticalAfterNormalization | SingleProfile | none | - |
-| mlisttohlist | etex+xetex | etex=4e2966e833ac2e1d xetex=cf04f262185d3af0 | LargeSemanticDivergence | UseXetex | none | - |
+| mlisttohlist | etex+xetex | etex=d55ac08551d61a7a xetex=f4f4ad62448794ef | LargeSemanticDivergence | UseXetex | none | - |
 | mubyteupdate | etex | etex=fc678e2c89ce541d | IdenticalAfterNormalization | SingleProfile | none | - |
 | muerror | etex+xetex | etex=2f831bcb511fc541 xetex=8fd61fb13ebc4acb | LargeSemanticDivergence | UseXetex | none | - |
 | newchoice | etex+xetex | etex=842b5ffc116e7c2d xetex=842b5ffc116e7c2d | IdenticalAfterNormalization | UseBase | none | - |
@@ -225,12 +225,12 @@ Total compared symbols: 411.
 | zcharbox | etex+xetex | etex=55f9c296fd3a2ab1 xetex=fb2f4e0b74b85214 | LargeSemanticDivergence | UseXetex | none | - |
 | zcharpw | xetex | xetex=e20cbe8fd512bc90 | IdenticalAfterNormalization | SingleProfile | none | - |
 | zcharwarning | etex+xetex | etex=b4d1da774cfd03d2 xetex=905191897de14eec | LargeSemanticDivergence | UseXetex | none | - |
-| zcleanbox | etex+xetex | etex=c84bb243ba3de343 xetex=41cec89a51d33c55 | SmallGuardedBehavior | UseXetex | none | - |
+| zcleanbox | etex+xetex | etex=b4a014606fbe5d96 xetex=f79a76cb80a746dc | SmallGuardedBehavior | UseXetex | none | - |
 | zcompresstrie | etex+xetex | etex=9355e0b6b95b3fe1 xetex=9355e0b6b95b3fe1 | IdenticalAfterNormalization | UseBase | none | - |
 | zcomputeotmathaccentpos | xetex | xetex=57e92d56a53067c4 | IdenticalAfterNormalization | SingleProfile | none | - |
 | zconfusion | etex+xetex | etex=6a2bb5eba70978a6 xetex=c01f3adf896761d0 | LargeSemanticDivergence | UseXetex | none | - |
 | zcopynativeglyphinfo | xetex | xetex=e46b12da114a576d | IdenticalAfterNormalization | SingleProfile | none | - |
-| zcopynodelist | etex+xetex | etex=d925258c86001ee1 xetex=19fcaf12a99f8c91 | LargeSemanticDivergence | UseXetex | none | - |
+| zcopynodelist | etex+xetex | etex=d925258c86001ee1 xetex=867430ac6364ee50 | LargeSemanticDivergence | UseXetex | none | - |
 | zdeleteglueref | etex+xetex | etex=023427af230701e6 xetex=6b67c207f49a68be | SmallGuardedBehavior | UseXetex | none | - |
 | zdeletesaref | etex+xetex | etex=babae255de1ac410 xetex=cc99ff1b36d0e6f1 | SmallGuardedBehavior | UseXetex | none | - |
 | zdeletetokenref | etex+xetex | etex=2172440d065883b6 xetex=f9a120b7178913f2 | SmallGuardedBehavior | UseXetex | none | - |
@@ -261,7 +261,7 @@ Total compared symbols: 411.
 | zfinmlist | etex+xetex | etex=7b08c393f3f98986 xetex=b515fc53cc6ead58 | SmallGuardedBehavior | UseXetex | none | - |
 | zfirstfit | etex+xetex | etex=e0bf63449dbe271e xetex=daf08845ffbde908 | SmallGuardedBehavior | UseXetex | none | - |
 | zflushlist | etex+xetex | etex=49dfd726d98e5d06 xetex=49dfd726d98e5d06 | IdenticalAfterNormalization | UseBase | none | - |
-| zflushnodelist | etex+xetex | etex=016e24e12a059882 xetex=f5bf0942f5a49bef | HostBoundaryDifference | UseXetex | free | - |
+| zflushnodelist | etex+xetex | etex=016e24e12a059882 xetex=e561a43566c09e86 | HostBoundaryDifference | UseXetex | free | - |
 | zflushstr | xetex | xetex=6f5e20371b42f777 | IdenticalAfterNormalization | SingleProfile | none | - |
 | zfract | etex+xetex | etex=22ae4fd9a151790b xetex=5e15c409a25533e9 | OnlyConstantsDiffer | UseXetex | none | - |
 | zfractionrule | etex+xetex | etex=cefc5b8baf562ec1 xetex=cefc5b8baf562ec1 | IdenticalAfterNormalization | UseBase | none | - |
@@ -426,7 +426,7 @@ Total compared symbols: 411.
 | ztokenstostring | xetex | xetex=53bfafcbc1f9a2b9 | IdenticalAfterNormalization | SingleProfile | none | - |
 | ztotalpw | xetex | xetex=7d11e5e2a6c70980 | IdenticalAfterNormalization | SingleProfile | none | - |
 | ztriefix | etex+xetex | etex=3d8eacbf3f46496a xetex=605c7a4d9ad7a138 | SmallGuardedBehavior | UseXetex | none | - |
-| ztrienode | etex+xetex | etex=4f51cefefd64e310 xetex=4f51cefefd64e310 | IdenticalAfterNormalization | UseBase | none | - |
+| ztrienode | etex+xetex | etex=122924aa62ab64dd xetex=122924aa62ab64dd | IdenticalAfterNormalization | UseBase | none | - |
 | ztriepack | etex+xetex | etex=07a62cb3ac76b37a xetex=07a62cb3ac76b37a | IdenticalAfterNormalization | UseBase | none | - |
 | ztrybreak | etex+xetex | etex=e77d2856f06e9ec3 xetex=1b3660864a3dfe27 | SmallGuardedBehavior | UseXetex | none | - |
 | zunifrand | xetex | xetex=8a07a80c93f81c58 | IdenticalAfterNormalization | SingleProfile | none | - |

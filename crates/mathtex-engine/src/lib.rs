@@ -35,17 +35,17 @@ pub use format::{
 pub use generated::{
     generated_node_to_fragment, EmptyGeneratedFontPlatform, EmptyGeneratedPlatform, GeneratedClock,
     GeneratedFontHandle, GeneratedFontMetrics, GeneratedFontPlatform, GeneratedFontSystemAdapter,
-    GeneratedFormatCache, GeneratedLayoutCapture, GeneratedLinebreakRequest, GeneratedNodeHandle,
-    GeneratedNodeKind, GeneratedNodeSnapshot, GeneratedNodeSourceSpan, GeneratedPlatform,
-    GeneratedPlatformAdapter, GeneratedResourceProvider, GeneratedResourceRequestRecord,
-    GeneratedSourceSpan,
+    GeneratedFormatCache, GeneratedHostBox, GeneratedHostBoxRequest, GeneratedHostBoxStyle,
+    GeneratedLayoutCapture, GeneratedLinebreakRequest, GeneratedNodeHandle, GeneratedNodeKind,
+    GeneratedNodeSnapshot, GeneratedNodeSourceSpan, GeneratedPlatform, GeneratedPlatformAdapter,
+    GeneratedResourceProvider, GeneratedResourceRequestRecord, GeneratedSourceSpan,
 };
 pub use mathtex_font as font;
 pub use mathtex_portable_engine_generated as portable_engine;
 pub use platform::{
     CollectingDiagnosticSink, ConfigurablePlatform, Diagnostic, DiagnosticSeverity, DiagnosticSink,
-    HostClock, HostLimits, LimitError, LinebreakRequest, NoopDiagnosticSink, NoopPlatform,
-    Platform,
+    HostBox, HostBoxGlyph, HostBoxRequest, HostBoxRule, HostBoxRun, HostBoxStyle, HostClock,
+    HostLimits, LimitError, LinebreakRequest, NoopDiagnosticSink, NoopPlatform, Platform,
 };
 pub use primitive::{PrimitiveEntry, PrimitiveRegistry, PrimitiveRegistryError};
 pub use profile::{

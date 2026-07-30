@@ -1353,6 +1353,7 @@ pub(crate) unsafe fn zbadness(&mut self, mut t: scaled, mut s: scaled) -> halfwo
         let __src_saved_cmd_span: u32 = Self::src_save_cmd_span(
             self as *mut PortableTexEngine<'_>,
         );
+        Self::host_box_resolve_field(self as *mut PortableTexEngine<'_>, p, s as i32)?;
         let mut current_block: u64;
         let mut Result: halfword = 0;
         let mut mem: *mut memoryword = self.state.zmem.as_mut_ptr();
@@ -1625,7 +1626,7 @@ pub(crate) unsafe fn zcompresstrie(&mut self, mut p: triepointer) -> triepointer
                                 *fresh52 += 1;
                                 words = 2 as eightbits;
                             }
-                            2 | 5 => {
+                            2 | 5 | 91 | 92 => {
                                 r = (&mut *(self as *mut PortableTexEngine<'_>))
                                     .zgetnode(2 as i32)?;
                                 words = 2 as eightbits;
@@ -4011,7 +4012,7 @@ pub(crate) unsafe fn zenddiagnostic(&mut self, mut blankline: boolean) {
                                     (&mut *(self as *mut PortableTexEngine<'_>))
                                         .zfreenode(p, 2 as i32);
                                 }
-                                2 | 5 => {
+                                2 | 5 | 91 | 92 => {
                                     (&mut *(self as *mut PortableTexEngine<'_>))
                                         .zfreenode(p, 2 as i32);
                                 }
@@ -23710,7 +23711,7 @@ pub(crate) unsafe fn ztriefix(&mut self, mut p: triepointer) {
         let mut q: triepointer = 0;
         // `trie_node`'s hash: abs(c + 1009*o + 2718*l + 3142*r) mod trie_size.
         // The multiplications overflow i32 for large pattern sets (e.g. 3142 * a
-        // ~1M trie pointer); in C / release Rust this wraps and the `mod` keeps it
+        // ~1M trie pointer), in C / release Rust this wraps and the `mod` keeps it
         // a valid hash. Use explicit wrapping ops so debug builds match release
         // byte-for-byte instead of panicking on the overflow check.
         let key = (*self.state.triec.offset(p as isize) as triepointer)

@@ -878,8 +878,8 @@ mod tests {
     use mathtex_ir::{ByteSpan, Direction, FragmentKind, LayoutNodeKind, Length};
 
     const TEST_FORMAT_INPUT: &str = "mathtex-test-format.tex";
-    const TEST_FORMAT_SETUP: &[u8] = br"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \catcode`\^=7 \catcode`\_=8 \def\usepackage#1{\input #1.sty\relax} \def\text#1{\hbox{#1}}";
-    const TEST_MATH_FONT_SETUP: &[u8] = br"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \catcode`\^=7 \catcode`\_=8 \def\usepackage#1{\input #1.sty\relax} \def\text#1{\hbox{#1}} \font\tenrm=cmr10 \font\teni=cmmi10 \font\tensy=cmsy10 \font\tenex=cmex10 \textfont0=\tenrm \scriptfont0=\tenrm \scriptscriptfont0=\tenrm \textfont1=\teni \scriptfont1=\teni \scriptscriptfont1=\teni \textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy \textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex";
+    const TEST_FORMAT_SETUP: &[u8] = br"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \catcode`\^=7 \catcode`\_=8 \def\usepackage#1{\input #1.sty\relax} \def\text#1{\hbox{#1}} \def\hostbox#1{\Uhostbox #1\relax}";
+    const TEST_MATH_FONT_SETUP: &[u8] = br"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \catcode`\^=7 \catcode`\_=8 \def\usepackage#1{\input #1.sty\relax} \def\text#1{\hbox{#1}} \def\hostbox#1{\Uhostbox #1\relax} \font\tenrm=cmr10 \font\teni=cmmi10 \font\tensy=cmsy10 \font\tenex=cmex10 \textfont0=\tenrm \scriptfont0=\tenrm \scriptscriptfont0=\tenrm \textfont1=\teni \scriptfont1=\teni \scriptscriptfont1=\teni \textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy \textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex";
 
     fn test_format(
         id: &'static str,
@@ -2050,6 +2050,215 @@ mod tests {
 
         assert_eq!(fragment.metadata.format_id, "plain-math");
         assert!(glyph_count >= 2);
+    }
+
+    fn math_fixture() -> (FormatImage, InMemoryResourceProvider) {
+        let (format, resources) = math_test_format(TexProfile.id());
+        let resources = resources
+            .with_resource(
+                "cmr10",
+                ResourceKind::Font,
+                include_bytes!("../../../vendor/texlive-source/texk/web2c/tests/cmr10.tfm")
+                    .to_vec(),
+            )
+            .with_resource(
+                "cmmi10",
+                ResourceKind::Font,
+                include_bytes!(
+                    "../../../vendor/texlive-source/texk/web2c/tests/generated-tfm/cmmi10.tfm"
+                )
+                .to_vec(),
+            )
+            .with_resource(
+                "cmsy10",
+                ResourceKind::Font,
+                include_bytes!(
+                    "../../../vendor/texlive-source/texk/web2c/tests/generated-tfm/cmsy10.tfm"
+                )
+                .to_vec(),
+            )
+            .with_resource(
+                "cmex10",
+                ResourceKind::Font,
+                include_bytes!(
+                    "../../../vendor/texlive-source/texk/web2c/tests/generated-tfm/cmex10.tfm"
+                )
+                .to_vec(),
+            );
+        (format, resources)
+    }
+
+    #[derive(Debug, Default)]
+    struct HostBoxTestPlatform {
+        diagnostics: crate::platform::NoopDiagnosticSink,
+        requests: alloc::rc::Rc<core::cell::RefCell<Vec<crate::HostBoxRequest>>>,
+        response: Option<crate::HostBox>,
+    }
+
+    impl Platform for HostBoxTestPlatform {
+        fn diagnostics(&self) -> &dyn crate::DiagnosticSink {
+            &self.diagnostics
+        }
+
+        fn host_box(&self, request: crate::HostBoxRequest) -> Option<crate::HostBox> {
+            self.requests.borrow_mut().push(request);
+            self.response.clone()
+        }
+    }
+
+    fn host_box_session(
+        response: Option<crate::HostBox>,
+    ) -> (
+        alloc::rc::Rc<core::cell::RefCell<Vec<crate::HostBoxRequest>>>,
+        Engine<TexProfile, InMemoryResourceProvider, HostBoxTestPlatform>,
+    ) {
+        let (format, resources) = math_fixture();
+        let requests = alloc::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let platform = HostBoxTestPlatform {
+            diagnostics: crate::platform::NoopDiagnosticSink,
+            requests: requests.clone(),
+            response,
+        };
+        let engine = EngineBuilder::new(TexProfile)
+            .format(format)
+            .resources(resources)
+            .platform(platform)
+            .build()
+            .expect("engine should build");
+        (requests, engine)
+    }
+
+    #[test]
+    fn host_box_without_host_typesets_a_deterministic_zero_size_box() {
+        let (_, engine) = host_box_session(None);
+        let mut session = engine.new_session();
+        let with_box = session
+            .layout_fragment_input(FragmentInput::math_inline(r"a\hostbox{5}b"))
+            .expect("\\hostbox should fall back to an empty box without a host");
+        let with_box_again = session
+            .layout_fragment_input(FragmentInput::math_inline(r"a\hostbox{5}b"))
+            .expect("fallback rendering should be repeatable");
+        let plain = session
+            .layout_fragment_input(FragmentInput::math_inline("ab"))
+            .expect("plain math should render");
+
+        // The zero width fallback participates as an Ord atom with no width of its own.
+        assert_eq!(with_box.surface.width, plain.surface.width);
+        assert_eq!(with_box.surface, with_box_again.surface);
+        assert_eq!(with_box.nodes.len(), with_box_again.nodes.len());
+    }
+
+    #[test]
+    fn host_box_places_host_metrics_and_render_data_as_one_ord_atom() {
+        let response = crate::HostBox {
+            width: 5 * 65536,
+            height: 12 * 65536,
+            depth: 3 * 65536,
+            runs: Vec::from([crate::HostBoxRun {
+                font_name: "HostFont".into(),
+                font_size: 10 * 65536,
+                glyphs: Vec::from([crate::HostBoxGlyph {
+                    glyph: 42,
+                    x: 0,
+                    y: 0,
+                    advance: 5 * 65536,
+                }]),
+            }]),
+            rules: Vec::from([crate::HostBoxRule {
+                x: 0,
+                y: -2 * 65536,
+                width: 5 * 65536,
+                height: 26214,
+            }]),
+        };
+        let (requests, engine) = host_box_session(Some(response));
+        let mut session = engine.new_session();
+        let fragment = session
+            .layout_fragment_input(FragmentInput::math_inline(r"a\hostbox{7}b"))
+            .expect("host box math should render");
+        let plain = session
+            .layout_fragment_input(FragmentInput::math_inline("ab"))
+            .expect("plain math should render");
+
+        let host_runs: Vec<_> = fragment
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.kind {
+                LayoutNodeKind::GlyphRun(run) if run.font.name == "HostFont" => Some(run),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(host_runs.len(), 1, "exactly one host glyph run expected");
+        assert_eq!(host_runs[0].glyphs.len(), 1);
+        assert_eq!(host_runs[0].glyphs[0].glyph_id.0, 42);
+        // Host fonts intern to synthetic ids above the base, clear of engine font numbers.
+        assert!(host_runs[0].font.id.0 >= 0x8000_0000);
+        assert_eq!(host_runs[0].font.size, Length::from_scaled_points(10 * 65536));
+        let host_rules = fragment
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    &node.kind,
+                    LayoutNodeKind::Rule(rule) if rule.size.width == Length::from_scaled_points(5 * 65536)
+                        && rule.size.height == Length::from_scaled_points(26214)
+                )
+            })
+            .count();
+        assert_eq!(host_rules, 1, "exactly one host rule expected");
+
+        // Ord spacing: a, the box, and b are all Ord atoms, so the box adds exactly its own width.
+        assert_eq!(
+            fragment.surface.width.0,
+            plain.surface.width.0 + 5 * 65536,
+            "host box should add its width with Ord spacing"
+        );
+        // The atom's metrics drive the line: baseline is its height, total adds its depth.
+        assert_eq!(fragment.surface.baseline.0, 12 * 65536);
+        assert_eq!(fragment.surface.height.0, (12 + 3) * 65536);
+
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].token, 7);
+        assert_eq!(requests[0].style, crate::HostBoxStyle::Text);
+        assert_eq!(requests[0].font_size, 10 * 65536);
+    }
+
+    #[test]
+    fn host_box_reports_style_and_size_context_per_site() {
+        let (requests, engine) = host_box_session(None);
+        let mut session = engine.new_session();
+        session
+            .layout_fragment_input(FragmentInput::math_inline(r"\hostbox{1}"))
+            .expect("inline math host box should render");
+        session
+            .layout_fragment_input(FragmentInput::math_display(r"\hostbox{2}"))
+            .expect("display math host box should render");
+        session
+            .layout_fragment_input(FragmentInput::math_inline(r"x^{\hostbox{3}}"))
+            .expect("script host box should render");
+        session
+            .layout_fragment_input(FragmentInput::math_inline(r"x^{y^{\hostbox{4}}}"))
+            .expect("scriptscript host box should render");
+        session
+            .layout_fragment_input(FragmentInput::math_inline(r"\text{\tenrm\hostbox{5}}"))
+            .expect("hbox content host box should render");
+
+        let requests = requests.borrow();
+        let by_token = |token: i32| {
+            requests
+                .iter()
+                .find(|request| request.token == token)
+                .copied()
+                .unwrap_or_else(|| panic!("token {token} should reach the host"))
+        };
+        assert_eq!(by_token(1).style, crate::HostBoxStyle::Text);
+        assert_eq!(by_token(2).style, crate::HostBoxStyle::Text);
+        assert_eq!(by_token(3).style, crate::HostBoxStyle::Script);
+        assert_eq!(by_token(4).style, crate::HostBoxStyle::ScriptScript);
+        assert_eq!(by_token(5).style, crate::HostBoxStyle::Text);
+        // Inside \text{} the request carries the selected text font's at size.
+        assert_eq!(by_token(5).font_size, 10 * 65536);
     }
 
     #[cfg(feature = "std")]
