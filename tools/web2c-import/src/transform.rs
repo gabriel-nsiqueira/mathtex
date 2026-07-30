@@ -406,8 +406,13 @@ pub(crate) fn patch_node_source_recording(mut source: String, function_name: &st
                 "(*mem.offset(q as isize)).hh.v.RH = r;\n        q = r;\n        p = (*mem.offset(p as isize)).hh.v.RH;",
                 "Self::src_carry_copy(self as *mut PortableTexEngine<'_>, p, r);\n        (*mem.offset(q as isize)).hh.v.RH = r;\n        q = r;\n        p = (*mem.offset(p as isize)).hh.v.RH;",
             );
-            // Host box markers (whatsit subtypes 91/92) copy as plain size 2 whatsits.
-            replace_at_most_once(&mut source, function_name, "2 | 5 => {", "2 | 5 | 91 | 92 => {");
+            // Host box markers (whatsit subtypes 91/92) copy as size 5 nodes, metrics plus payload.
+            replace_at_most_once(
+                &mut source,
+                function_name,
+                "2 | 5 => {",
+                "91 | 92 => {\n    r = (&mut *(self as *mut PortableTexEngine<'_>)).zgetnode(5 as i32);\n    words = 5 as eightbits;\n}\n2 | 5 => {",
+            );
         }
         // Replace the WEB `src_token_copy` marker with a real token span carry.
         "zsrctokencopy" => {
@@ -482,9 +487,23 @@ pub(crate) fn patch_node_source_recording(mut source: String, function_name: &st
                 "        91 => {\n            (&mut *(self as *mut PortableTexEngine<'_>)).scanint();\n            Self::host_box_insert(\n                self as *mut PortableTexEngine<'_>,\n                self.state.curval,\n            );\n        }\n        46 => {",
             );
         }
-        // Host box markers (whatsit subtypes 91/92) free as plain size 2 whatsits.
+        // Host box markers (whatsit subtypes 91/92) free as size 5 nodes, metrics plus payload.
         "zflushnodelist" => {
-            replace_at_most_once(&mut source, function_name, "2 | 5 => {", "2 | 5 | 91 | 92 => {");
+            replace_at_most_once(
+                &mut source,
+                function_name,
+                "2 | 5 => {",
+                "91 | 92 => {\n    (&mut *(self as *mut PortableTexEngine<'_>)).zfreenode(p, 5 as i32);\n}\n2 | 5 => {",
+            );
+        }
+        // Host box markers measure like glyph nodes in hpack so rebox repacks keep their width.
+        "zhpack" => {
+            replace_at_most_once(
+                &mut source,
+                function_name,
+                "42 | 43 | 44 => {",
+                "42 | 43 | 44 | 91 | 92 => {",
+            );
         }
         "zlinebreak" => {
             source = source.replace(

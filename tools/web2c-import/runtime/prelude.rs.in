@@ -3045,8 +3045,8 @@ impl<'resources> PortableTexEngine<'resources> {
         let character = if is_character {
             subtype
         } else if matches!(kind, PortableNodeKind::HostBoxRef) {
-            // Host box markers carry their record index in the payload word.
-            self.node_word(node, 1).map_or(0, |word| unsafe { word.u.CINT })
+            // Host box markers carry their record index in the payload word after the metrics.
+            self.node_word(node, 4).map_or(0, |word| unsafe { word.u.CINT })
         } else {
             native_word4.map_or(0, |word| unsafe { word.v.QQQQ.u.B2 as i32 })
         };
@@ -3086,7 +3086,12 @@ impl<'resources> PortableTexEngine<'resources> {
                 0,
                 None,
             ),
-            8 if matches!(kind, PortableNodeKind::NativeWord | PortableNodeKind::NativeGlyph) => (
+            8 if matches!(
+                kind,
+                PortableNodeKind::NativeWord
+                    | PortableNodeKind::NativeGlyph
+                    | PortableNodeKind::HostBoxRef
+            ) => (
                 self.node_scaled(node, 1).unwrap_or_default(),
                 self.node_scaled(node, 3).unwrap_or_default(),
                 self.node_scaled(node, 2).unwrap_or_default(),
@@ -4339,19 +4344,27 @@ impl<'resources> PortableTexEngine<'resources> {
         Ok(())
     }
 
-    // Allocates a size 2 marker whatsit whose payload is a pending token id or a resolved record index.
+    // Allocates a size 5 marker whatsit in the glyph node metric layout (width/depth/height at
+    // words 1..3) so hpack measures it even after rebox dissolves the enclosing shell box.
+    // Word 4 holds the payload, a pending token id or a resolved record index.
     unsafe fn host_box_marker(
         engine: *mut PortableTexEngine<'_>,
         subtype: i16,
         payload: integer,
+        width: scaled,
+        height: scaled,
+        depth: scaled,
     ) -> EngineFlow<halfword> {
         let this = &mut *engine;
-        let marker = this.zgetnode(2 as i32)?;
+        let marker = this.zgetnode(5 as i32)?;
         let mem: *mut memoryword = this.state.zmem.as_mut_ptr();
         (*mem.offset(marker as isize)).hh.u.B0 = 8 as i16;
         (*mem.offset(marker as isize)).hh.u.B1 = subtype;
         (*mem.offset(marker as isize)).hh.v.RH = -(268435455 as i64) as halfword;
-        (*mem.offset((marker as i32 + 1 as i32) as isize)).u.CINT = payload;
+        (*mem.offset((marker as i32 + 1 as i32) as isize)).u.CINT = width;
+        (*mem.offset((marker as i32 + 2 as i32) as isize)).u.CINT = depth;
+        (*mem.offset((marker as i32 + 3 as i32) as isize)).u.CINT = height;
+        (*mem.offset((marker as i32 + 4 as i32) as isize)).u.CINT = payload;
         Ok(marker)
     }
 
@@ -4377,9 +4390,16 @@ impl<'resources> PortableTexEngine<'resources> {
         (*mem.offset((hbox as i32 + 2 as i32) as isize)).u.CINT = host_box.depth;
         (*mem.offset((hbox as i32 + 3 as i32) as isize)).u.CINT = host_box.height;
         let index = this.hostbox_records.len();
+        let (width, height, depth) = (host_box.width, host_box.height, host_box.depth);
         this.hostbox_records.push(host_box);
-        let marker =
-            Self::host_box_marker(engine, HOST_BOX_RESOLVED_SUBTYPE, index as integer)?;
+        let marker = Self::host_box_marker(
+            engine,
+            HOST_BOX_RESOLVED_SUBTYPE,
+            index as integer,
+            width,
+            height,
+            depth,
+        )?;
         (*mem.offset((hbox as i32 + 5 as i32) as isize)).hh.v.RH = marker;
         Ok(hbox)
     }
@@ -4395,7 +4415,7 @@ impl<'resources> PortableTexEngine<'resources> {
         let mode = (this.state.curlist.modefield as i32).abs();
         if mode == 209 as i32 {
             let marker =
-                Self::host_box_marker(engine, HOST_BOX_PENDING_SUBTYPE, token)?;
+                Self::host_box_marker(engine, HOST_BOX_PENDING_SUBTYPE, token, 0, 0, 0)?;
             let this = &mut *engine;
             let placeholder = this.newnullbox()?;
             let noad = this.newnoad()?;
@@ -4469,7 +4489,7 @@ impl<'resources> PortableTexEngine<'resources> {
         {
             return Ok(());
         }
-        let token = (*mem.offset((marker as i32 + 1 as i32) as isize)).u.CINT;
+        let token = (*mem.offset((marker as i32 + 4 as i32) as isize)).u.CINT;
         // Style codes map to sizes as in mlist_to_hlist: below 4 is text, then script sizes.
         let size = if style_code < 4 {
             0

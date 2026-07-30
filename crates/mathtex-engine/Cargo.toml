@@ -1,6 +1,6 @@
 [package]
 name = "mathtex-engine"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,7 +13,7 @@ default = ["std"]
 std = ["mathtex-font/std", "mathtex-ir/std"]
 
 [dependencies]
-mathtex-portable-engine-generated = { version = "0.1.1", path = "../../generated/portable-engine" }
+mathtex-portable-engine-generated = { version = "0.1.2", path = "../../generated/portable-engine" }
 mathtex-font = { version = "0.1.0", path = "../mathtex-font", default-features = false }
 mathtex-ir = { version = "0.1.0", path = "../mathtex-ir", default-features = false }
 # Pure-Rust DEFLATE (wasm-friendly) used to compress packaged format images.

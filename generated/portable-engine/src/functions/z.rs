@@ -1626,7 +1626,12 @@ pub(crate) unsafe fn zcompresstrie(&mut self, mut p: triepointer) -> triepointer
                                 *fresh52 += 1;
                                 words = 2 as eightbits;
                             }
-                            2 | 5 | 91 | 92 => {
+                            91 | 92 => {
+                                r = (&mut *(self as *mut PortableTexEngine<'_>))
+                                    .zgetnode(5 as i32)?;
+                                words = 5 as eightbits;
+                            }
+                            2 | 5 => {
                                 r = (&mut *(self as *mut PortableTexEngine<'_>))
                                     .zgetnode(2 as i32)?;
                                 words = 2 as eightbits;
@@ -4012,7 +4017,11 @@ pub(crate) unsafe fn zenddiagnostic(&mut self, mut blankline: boolean) {
                                     (&mut *(self as *mut PortableTexEngine<'_>))
                                         .zfreenode(p, 2 as i32);
                                 }
-                                2 | 5 | 91 | 92 => {
+                                91 | 92 => {
+                                    (&mut *(self as *mut PortableTexEngine<'_>))
+                                        .zfreenode(p, 5 as i32);
+                                }
+                                2 | 5 => {
                                     (&mut *(self as *mut PortableTexEngine<'_>))
                                         .zfreenode(p, 2 as i32);
                                 }
@@ -4893,7 +4902,7 @@ pub(crate) unsafe fn zhalf(&mut self, mut x: integer) -> integer {
                                 current_block = 5181772461570869434;
                                 break;
                             }
-                            42 | 43 | 44 => {
+                            42 | 43 | 44 | 91 | 92 => {
                                 current_block = 5561502792500464877;
                                 break;
                             }

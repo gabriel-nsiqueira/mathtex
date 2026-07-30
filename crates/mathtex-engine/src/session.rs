@@ -2225,6 +2225,63 @@ mod tests {
     }
 
     #[test]
+    fn host_box_keeps_width_through_fraction_rebox() {
+        let response = crate::HostBox {
+            width: 5 * 65536,
+            height: 8 * 65536,
+            depth: 0,
+            runs: Vec::from([crate::HostBoxRun {
+                font_name: "HostFont".into(),
+                font_size: 10 * 65536,
+                glyphs: Vec::from([crate::HostBoxGlyph {
+                    glyph: 42,
+                    x: 0,
+                    y: 0,
+                    advance: 5 * 65536,
+                }]),
+            }]),
+            rules: Vec::new(),
+        };
+        let (_, engine) = host_box_session(Some(response));
+        let mut session = engine.new_session();
+        // The denominator is narrower than "ab", so make_fraction runs it through rebox.
+        let fragment = session
+            .layout_fragment_input(FragmentInput::math_inline(r"{ab\over\hostbox{7}}"))
+            .expect("fraction with host box denominator should render");
+
+        let host_width = Length::from_scaled_points(5 * 65536);
+        let host_boxes: Vec<_> = fragment
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.kind, LayoutNodeKind::Box(b) if b.metrics.width == host_width)
+            })
+            .collect();
+        assert_eq!(host_boxes.len(), 1, "rebox dissolves the shell, one record box remains");
+        let host_box = host_boxes[0];
+        let parent = fragment
+            .nodes
+            .iter()
+            .find_map(|node| match &node.kind {
+                LayoutNodeKind::Box(b) if b.children.contains(&host_box.id) => Some(b),
+                _ => None,
+            })
+            .expect("record box should sit inside the reboxed line");
+        // Centering glue must split the leftover space, not the full line width.
+        let expected = (parent.metrics.width.0 - 5 * 65536) / 2;
+        let offset = host_box.origin.x.0;
+        assert!(
+            (offset - expected).abs() <= 2,
+            "record box must start at (line - box)/2 = {expected}, got {offset}"
+        );
+        assert!(offset > 0, "reboxed line must indent the record box");
+        // Render data survives the rebox copy.
+        assert!(fragment.nodes.iter().any(|node| {
+            matches!(&node.kind, LayoutNodeKind::GlyphRun(run) if run.font.name == "HostFont")
+        }));
+    }
+
+    #[test]
     fn host_box_reports_style_and_size_context_per_site() {
         let (requests, engine) = host_box_session(None);
         let mut session = engine.new_session();

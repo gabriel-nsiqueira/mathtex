@@ -230,7 +230,7 @@ Total compared symbols: 411.
 | zcomputeotmathaccentpos | xetex | xetex=57e92d56a53067c4 | IdenticalAfterNormalization | SingleProfile | none | - |
 | zconfusion | etex+xetex | etex=6a2bb5eba70978a6 xetex=c01f3adf896761d0 | LargeSemanticDivergence | UseXetex | none | - |
 | zcopynativeglyphinfo | xetex | xetex=e46b12da114a576d | IdenticalAfterNormalization | SingleProfile | none | - |
-| zcopynodelist | etex+xetex | etex=d925258c86001ee1 xetex=867430ac6364ee50 | LargeSemanticDivergence | UseXetex | none | - |
+| zcopynodelist | etex+xetex | etex=d925258c86001ee1 xetex=3497c8a1e4968ff2 | LargeSemanticDivergence | UseXetex | none | - |
 | zdeleteglueref | etex+xetex | etex=023427af230701e6 xetex=6b67c207f49a68be | SmallGuardedBehavior | UseXetex | none | - |
 | zdeletesaref | etex+xetex | etex=babae255de1ac410 xetex=cc99ff1b36d0e6f1 | SmallGuardedBehavior | UseXetex | none | - |
 | zdeletetokenref | etex+xetex | etex=2172440d065883b6 xetex=f9a120b7178913f2 | SmallGuardedBehavior | UseXetex | none | - |
@@ -261,7 +261,7 @@ Total compared symbols: 411.
 | zfinmlist | etex+xetex | etex=7b08c393f3f98986 xetex=b515fc53cc6ead58 | SmallGuardedBehavior | UseXetex | none | - |
 | zfirstfit | etex+xetex | etex=e0bf63449dbe271e xetex=daf08845ffbde908 | SmallGuardedBehavior | UseXetex | none | - |
 | zflushlist | etex+xetex | etex=49dfd726d98e5d06 xetex=49dfd726d98e5d06 | IdenticalAfterNormalization | UseBase | none | - |
-| zflushnodelist | etex+xetex | etex=016e24e12a059882 xetex=e561a43566c09e86 | HostBoundaryDifference | UseXetex | free | - |
+| zflushnodelist | etex+xetex | etex=016e24e12a059882 xetex=aa5e1a3cd79f588e | HostBoundaryDifference | UseXetex | free | - |
 | zflushstr | xetex | xetex=6f5e20371b42f777 | IdenticalAfterNormalization | SingleProfile | none | - |
 | zfract | etex+xetex | etex=22ae4fd9a151790b xetex=5e15c409a25533e9 | OnlyConstantsDiffer | UseXetex | none | - |
 | zfractionrule | etex+xetex | etex=cefc5b8baf562ec1 xetex=cefc5b8baf562ec1 | IdenticalAfterNormalization | UseBase | none | - |
@@ -274,7 +274,7 @@ Total compared symbols: 411.
 | zgsawdef | etex+xetex | etex=6a5d82a3d7d440da xetex=80e751c548d2d761 | LargeSemanticDivergence | UseXetex | none | - |
 | zhalf | etex+xetex | etex=cbd7381741074765 xetex=cbd7381741074765 | IdenticalAfterNormalization | UseBase | none | - |
 | zheightplusdepth | etex+xetex | etex=aacad4ef79955c7a xetex=aacad4ef79955c7a | IdenticalAfterNormalization | UseBase | none | - |
-| zhpack | etex+xetex | etex=a39081578ae87cf0 xetex=f0cca8c48214eb97 | LargeSemanticDivergence | UseXetex | none | - |
+| zhpack | etex+xetex | etex=a39081578ae87cf0 xetex=e53c4f3a2e353432 | LargeSemanticDivergence | UseXetex | none | - |
 | zidlookup | etex+xetex | etex=ea3b72b32d38d65f xetex=0a1457a37ab97f9d | LargeSemanticDivergence | UseXetex | none | - |
 | zinitrandoms | xetex | xetex=6a993eb3650c24f8 | IdenticalAfterNormalization | SingleProfile | none | - |
 | zinitspan | etex+xetex | etex=46713d5899d6f4a8 xetex=044cc021a82a9a99 | SmallGuardedBehavior | UseXetex | none | - |
