@@ -345,7 +345,7 @@ pub(crate) fn runtime_source(
 pub(crate) fn cargo_source() -> &'static str {
     r#"[package]
 name = "mathtex-portable-engine-generated"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Machine generated portable TeX engine core for mathtex, translated from the TeX, eTeX and XeTeX sources"
 repository = "https://github.com/gabriel-nsiqueira/mathtex"
