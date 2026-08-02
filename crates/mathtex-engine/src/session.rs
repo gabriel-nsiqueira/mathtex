@@ -4,20 +4,25 @@ use alloc::string::{String, ToString};
 use mathtex_font::{
     FontData, FontError, FontQuery, FontSystem, NoFontSystem, ShapeRequest, ShapedText,
 };
-use mathtex_ir::{
-    Fragment, FragmentKind, FragmentMetadata,
-};
+use mathtex_ir::{Fragment, FragmentKind, FragmentMetadata};
 
 use crate::emit::IrEmitter;
 use crate::format::{FormatImage, FormatResourceKind, SessionState};
 use crate::generated::{
-    generated_node_to_fragment, GeneratedFontSystemAdapter, GeneratedFormatCache,
-    GeneratedPlatformAdapter, GeneratedResourceProvider,
+    generated_node_to_fragment, unpack_packaged_format, GeneratedFontSystemAdapter,
+    GeneratedFormatCache, GeneratedPlatformAdapter, GeneratedResourceProvider,
 };
 use crate::platform::{LimitError, Platform};
 use crate::primitive::{PrimitiveEntry, PrimitiveRegistry, PrimitiveRegistryError};
 use crate::profile::{EngineKind, EngineProfile, EngineSemantics};
 use crate::resource::{Resource, ResourceError, ResourceKind, ResourceProvider, ResourceRequest};
+
+/// Native font table entries preserved by a packaged format.
+type NativeFontTable = alloc::vec::Vec<(
+    mathtex_portable_engine_generated::PortableFontHandle,
+    String,
+    i32,
+)>;
 
 /// Engine initialized from a format image with associated resource, platform, and font boundaries.
 #[derive(Clone, Debug)]
@@ -30,6 +35,7 @@ pub struct Engine<P, R, H, F = NoFontSystem> {
     platform: H,
     fonts: F,
     primitives: PrimitiveRegistry,
+    native_font_table: NativeFontTable,
 }
 
 impl<P, R, H> Engine<P, R, H>
@@ -59,6 +65,7 @@ where
             platform,
             fonts: NoFontSystem,
             primitives,
+            native_font_table: NativeFontTable::new(),
         })
     }
 }
@@ -92,7 +99,64 @@ where
             platform,
             fonts,
             primitives,
+            native_font_table: NativeFontTable::new(),
         })
+    }
+
+    /// Builds an engine from a packaged format produced by
+    /// [`pack_packaged_format`](crate::generated::pack_packaged_format), skipping format
+    /// initialization: the format image deserializes from the package and the preserved
+    /// native font handles rebind on every session engine.
+    pub fn from_packaged_with_fonts(
+        profile: P,
+        packaged: &[u8],
+        resources: R,
+        platform: H,
+        fonts: F,
+    ) -> Result<Self, BuildError> {
+        let semantics = EngineSemantics::from_profile(&profile);
+        let primitives = PrimitiveRegistry::from_specs(semantics.primitives())
+            .map_err(BuildError::InvalidPrimitives)?;
+        let Some((format_bytes, native_font_table)) = unpack_packaged_format(packaged) else {
+            return Err(BuildError::InvalidPackagedFormat);
+        };
+        let Some(generated_format) = GeneratedFormatCache::from_bytes(&format_bytes) else {
+            return Err(BuildError::InvalidPackagedFormat);
+        };
+        let format = FormatImage::empty("packaged", profile.id());
+        let engine = Self {
+            profile,
+            semantics,
+            generated_format,
+            format,
+            resources,
+            platform,
+            fonts,
+            primitives,
+            native_font_table,
+        };
+        engine.validate_packaged_fonts()?;
+        Ok(engine)
+    }
+
+    // Rebinding must succeed before any fragment runs, a cold format with dead font handles is unusable.
+    fn validate_packaged_fonts(&self) -> Result<(), BuildError> {
+        if self.native_font_table.is_empty() {
+            return Ok(());
+        }
+        let mut probe = self
+            .generated_format
+            .instantiate(
+                generated_profile_for(&self.semantics),
+                GeneratedResourceProvider::new(&self.resources),
+            )
+            .with_platform(GeneratedPlatformAdapter::new(&self.platform))
+            .with_font_platform(GeneratedFontSystemAdapter::new(&self.fonts));
+        if probe.restore_native_font_table(&self.native_font_table) {
+            Ok(())
+        } else {
+            Err(BuildError::PackagedFontsUnavailable)
+        }
     }
 
     /// Returns a staged builder for this engine profile.
@@ -164,6 +228,7 @@ where
 pub struct EngineBuilder<P, R, H, F = NoFontSystem> {
     profile: P,
     format: Option<FormatImage>,
+    packaged: Option<alloc::vec::Vec<u8>>,
     resources: Option<R>,
     platform: Option<H>,
     fonts: F,
@@ -175,6 +240,7 @@ impl<P> EngineBuilder<P, (), (), NoFontSystem> {
         Self {
             profile,
             format: None,
+            packaged: None,
             resources: None,
             platform: None,
             fonts: NoFontSystem,
@@ -189,11 +255,19 @@ impl<P, R, H, F> EngineBuilder<P, R, H, F> {
         self
     }
 
+    /// Uses a packaged format from
+    /// [`pack_packaged_format`](crate::generated::pack_packaged_format) instead of a format image.
+    pub fn packaged_format(mut self, packaged: alloc::vec::Vec<u8>) -> Self {
+        self.packaged = Some(packaged);
+        self
+    }
+
     /// Sets the resource provider for the engine being built.
     pub fn resources<NextR>(self, resources: NextR) -> EngineBuilder<P, NextR, H, F> {
         EngineBuilder {
             profile: self.profile,
             format: self.format,
+            packaged: self.packaged,
             resources: Some(resources),
             platform: self.platform,
             fonts: self.fonts,
@@ -205,6 +279,7 @@ impl<P, R, H, F> EngineBuilder<P, R, H, F> {
         EngineBuilder {
             profile: self.profile,
             format: self.format,
+            packaged: self.packaged,
             resources: self.resources,
             platform: Some(platform),
             fonts: self.fonts,
@@ -216,6 +291,7 @@ impl<P, R, H, F> EngineBuilder<P, R, H, F> {
         EngineBuilder {
             profile: self.profile,
             format: self.format,
+            packaged: self.packaged,
             resources: self.resources,
             platform: self.platform,
             fonts,
@@ -232,6 +308,20 @@ where
 {
     /// Validates the builder state and constructs an engine.
     pub fn build(self) -> Result<Engine<P, R, H, F>, BuildError> {
+        if let Some(packaged) = self.packaged {
+            if self.format.is_some() {
+                return Err(BuildError::AmbiguousFormat);
+            }
+            let resources = self.resources.expect("resources are required by type");
+            let platform = self.platform.expect("platform is required by type");
+            return Engine::from_packaged_with_fonts(
+                self.profile,
+                &packaged,
+                resources,
+                platform,
+                self.fonts,
+            );
+        }
         let format = self.format.ok_or(BuildError::MissingFormat)?;
         if format.profile != self.profile.id() {
             return Err(BuildError::ProfileFormatMismatch {
@@ -307,13 +397,12 @@ where
             .ok_or_else(|| EngineError::Layout {
                 message: "generated TeX engine did not capture a fragment root".to_string(),
             })?;
-        let fragment =
-            generated_node_to_fragment(&generated, root, metadata).ok_or_else(|| {
-                EngineError::Layout {
-                    message: "generated TeX engine could not convert captured fragment root"
-                        .to_string(),
-                }
-            })?;
+        let fragment = generated_node_to_fragment(&generated, root, metadata).ok_or_else(|| {
+            EngineError::Layout {
+                message: "generated TeX engine could not convert captured fragment root"
+                    .to_string(),
+            }
+        })?;
         self.check_layout_node_limits(fragment.nodes.len())?;
         Ok(fragment)
     }
@@ -321,14 +410,21 @@ where
     /// Instantiate the generated engine seeded from cached format state.
     #[must_use]
     pub fn generated_engine(&self) -> mathtex_portable_engine_generated::PortableTexEngine<'_> {
-        self.engine
+        let mut engine = self
+            .engine
             .generated_format
             .instantiate(
                 generated_profile_for(&self.engine.semantics),
                 GeneratedResourceProvider::new(&self.engine.resources),
             )
             .with_platform(GeneratedPlatformAdapter::new(&self.engine.platform))
-            .with_font_platform(GeneratedFontSystemAdapter::new(&self.engine.fonts))
+            .with_font_platform(GeneratedFontSystemAdapter::new(&self.engine.fonts));
+        if !self.engine.native_font_table.is_empty() {
+            // Build validated the rebind, a failure here means the font system changed underneath the engine.
+            let restored = engine.restore_native_font_table(&self.engine.native_font_table);
+            debug_assert!(restored, "validated native font table failed to rebind");
+        }
+        engine
     }
 
     /// Reads a TeX input file by name from the resource provider.
@@ -805,6 +901,12 @@ pub enum BuildError {
         /// Profile recorded in the format image.
         format_profile: &'static str,
     },
+    /// The packaged bytes were not produced by `pack_packaged_format` for this build target.
+    InvalidPackagedFormat,
+    /// A native font preserved in the packaged format failed to reload through the font system.
+    PackagedFontsUnavailable,
+    /// Both a format image and a packaged format were supplied to the builder.
+    AmbiguousFormat,
 }
 
 /// Error encountered while preloading format resources into the generated engine.
@@ -2193,7 +2295,10 @@ mod tests {
         assert_eq!(host_runs[0].glyphs[0].glyph_id.0, 42);
         // Host fonts intern to synthetic ids above the base, clear of engine font numbers.
         assert!(host_runs[0].font.id.0 >= 0x8000_0000);
-        assert_eq!(host_runs[0].font.size, Length::from_scaled_points(10 * 65536));
+        assert_eq!(
+            host_runs[0].font.size,
+            Length::from_scaled_points(10 * 65536)
+        );
         let host_rules = fragment
             .nodes
             .iter()
@@ -2257,7 +2362,11 @@ mod tests {
                 matches!(&node.kind, LayoutNodeKind::Box(b) if b.metrics.width == host_width)
             })
             .collect();
-        assert_eq!(host_boxes.len(), 1, "rebox dissolves the shell, one record box remains");
+        assert_eq!(
+            host_boxes.len(),
+            1,
+            "rebox dissolves the shell, one record box remains"
+        );
         let host_box = host_boxes[0];
         let parent = fragment
             .nodes
@@ -2331,6 +2440,37 @@ mod tests {
     #[test]
     fn real_plain_format_loads_from_vendored_fixture() {
         assert_real_plain_format_loads(PlainFixtureResources);
+    }
+
+    #[test]
+    fn packaged_format_roundtrip_lays_out_fragments() {
+        let format = FormatImage::plain(TexProfile.id())
+            .build(&PlainFixtureResources)
+            .expect("real plain.tex should resolve");
+        let booted = EngineBuilder::new(TexProfile)
+            .format(format)
+            .resources(PlainFixtureResources)
+            .platform(NoopPlatform::default())
+            .build()
+            .expect("engine should build with real plain format");
+        let mut baseline_session = booted.new_session();
+        let baseline = baseline_session
+            .layout_fragment_input(FragmentInput::text(r"\tenrm A"))
+            .expect("booted engine should lay out the fragment");
+
+        let packaged =
+            crate::generated::pack_packaged_format(&booted.generated_format().to_bytes(), &[]);
+        let engine = EngineBuilder::new(TexProfile)
+            .packaged_format(packaged)
+            .resources(PlainFixtureResources)
+            .platform(NoopPlatform::default())
+            .build()
+            .expect("packaged engine should build without format initialization");
+        let mut session = engine.new_session();
+        let fragment = session
+            .layout_fragment_input(FragmentInput::text(r"\tenrm A"))
+            .expect("packaged format should lay out fragments");
+        assert_eq!(fragment.nodes.len(), baseline.nodes.len());
     }
 
     #[cfg(feature = "std")]
