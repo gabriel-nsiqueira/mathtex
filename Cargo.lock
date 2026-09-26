@@ -128,7 +128,7 @@ version = "0.1.0"
 
 [[package]]
 name = "mathtex-portable-engine-generated"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "mathtex-render"
