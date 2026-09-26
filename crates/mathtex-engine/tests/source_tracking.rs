@@ -42,7 +42,10 @@ fn render_program(program: &str, tracking: bool) -> Fragment {
         resources = resources.with_resource(name, ResourceKind::Font, bytes.to_vec());
     }
     let format = GeneratedFormatCache::initialized(EngineProfile::tex());
-    let mut engine = format.instantiate(EngineProfile::tex(), GeneratedResourceProvider::new(resources));
+    let mut engine = format.instantiate(
+        EngineProfile::tex(),
+        GeneratedResourceProvider::new(resources),
+    );
 
     engine.set_source_tracking(tracking);
     engine.begin_fragment_capture();
@@ -179,7 +182,10 @@ fn mathbin_leaf_primary_exact() {
 #[test]
 fn mathbin_enclosing_construct_entry() {
     let entries = glyph_entries(r"\mathbin{+}", "+");
-    assert_eq!(entries.first(), Some(&(SourceRole::Primary, "+".to_string())));
+    assert_eq!(
+        entries.first(),
+        Some(&(SourceRole::Primary, "+".to_string()))
+    );
     assert!(
         entries
             .iter()
@@ -277,8 +283,14 @@ fn containment_fraction() {
         .map(|(_, s)| *s)
         .collect();
 
-    assert!(glyphs.contains(&"a"), "numerator glyph should slice to a; got {glyphs:?}");
-    assert!(glyphs.contains(&"b"), "denominator glyph should slice to b; got {glyphs:?}");
+    assert!(
+        glyphs.contains(&"a"),
+        "numerator glyph should slice to a; got {glyphs:?}"
+    );
+    assert!(
+        glyphs.contains(&"b"),
+        "denominator glyph should slice to b; got {glyphs:?}"
+    );
     // TeX generates the fraction bar as a rule node spanning the whole \frac invocation.
     assert!(
         rules.iter().any(|r| *r == body),
@@ -318,8 +330,14 @@ fn radical_surd_and_vinculum_map_to_whole_construct() {
         rules.iter().any(|r| *r == r"\sqrt[3]{x}"),
         "vinculum rule must cover \\sqrt[3]{{x}}; got rules {rules:?}"
     );
-    assert!(glyphs.contains(&"3"), "degree must slice to 3; got {glyphs:?}");
-    assert!(glyphs.contains(&"x"), "radicand must slice to x; got {glyphs:?}");
+    assert!(
+        glyphs.contains(&"3"),
+        "degree must slice to 3; got {glyphs:?}"
+    );
+    assert!(
+        glyphs.contains(&"x"),
+        "radicand must slice to x; got {glyphs:?}"
+    );
 }
 
 #[test]
@@ -409,8 +427,14 @@ fn multi_line_absolute_offsets() {
         .map(|(_, s)| *s)
         .collect();
     // Spans are absolute byte offsets into the fed buffer, not offsets relative to a line.
-    assert!(glyphs.contains(&"a"), "line-1 glyph a missing; got {glyphs:?}");
-    assert!(glyphs.contains(&"b"), "line-2 glyph b missing; got {glyphs:?}");
+    assert!(
+        glyphs.contains(&"a"),
+        "line-1 glyph a missing; got {glyphs:?}"
+    );
+    assert!(
+        glyphs.contains(&"b"),
+        "line-2 glyph b missing; got {glyphs:?}"
+    );
 }
 
 #[test]
@@ -466,7 +490,11 @@ fn tracking_does_not_change_layout() {
     let off = render_program(&fed, false);
 
     assert_eq!(kinds(&on), kinds(&off), "node kinds changed with tracking");
-    assert_eq!(bounds(&on), bounds(&off), "node bounds changed with tracking");
+    assert_eq!(
+        bounds(&on),
+        bounds(&off),
+        "node bounds changed with tracking"
+    );
 
     assert!(
         off.nodes.iter().all(|n| n.primary_source.is_none()),
@@ -501,7 +529,10 @@ fn glyph_slices(fed: &str, body: &str) -> Vec<String> {
 fn superscript_glyph_maps_to_own_source() {
     let fed = math_program("x^2");
     let g = glyph_slices(&fed, "x^2");
-    assert!(g.contains(&"x".to_string()), "base x must map to \"x\"; got {g:?}");
+    assert!(
+        g.contains(&"x".to_string()),
+        "base x must map to \"x\"; got {g:?}"
+    );
     assert!(
         g.contains(&"2".to_string()),
         "superscript 2 must map to \"2\" (its own source), not the base; got {g:?}"
@@ -513,7 +544,10 @@ fn subscript_single_glyph_maps_to_own_source() {
     let fed = math_program("x_2");
     let g = glyph_slices(&fed, "x_2");
     assert!(g.contains(&"x".to_string()), "base x; got {g:?}");
-    assert!(g.contains(&"2".to_string()), "subscript 2 must map to \"2\"; got {g:?}");
+    assert!(
+        g.contains(&"2".to_string()),
+        "subscript 2 must map to \"2\"; got {g:?}"
+    );
 }
 
 #[test]
@@ -606,7 +640,10 @@ fn render_host_box_program(program: &str) -> Fragment {
     }
     let format = GeneratedFormatCache::initialized(EngineProfile::tex());
     let mut engine = format
-        .instantiate(EngineProfile::tex(), GeneratedResourceProvider::new(resources))
+        .instantiate(
+            EngineProfile::tex(),
+            GeneratedResourceProvider::new(resources),
+        )
         .with_platform(FixedHostBoxPlatform);
 
     engine.set_source_tracking(true);
@@ -655,9 +692,8 @@ fn host_box_atom_slices<'a>(fragment: &'a Fragment, fed: &'a str) -> Vec<&'a str
 
 #[test]
 fn host_box_atom_spans_its_own_call_site() {
-    let fed = format!(
-        "{SETUP}\\def\\hostbox#1{{\\Uhostbox #1\\relax}}\\hbox{{$a\\hostbox{{7}}b$}}\\end"
-    );
+    let fed =
+        format!("{SETUP}\\def\\hostbox#1{{\\Uhostbox #1\\relax}}\\hbox{{$a\\hostbox{{7}}b$}}\\end");
     let fragment = render_host_box_program(&fed);
     let slices = host_box_atom_slices(&fragment, &fed);
     assert!(!slices.is_empty(), "host box atom must be present");

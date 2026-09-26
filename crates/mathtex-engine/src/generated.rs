@@ -62,8 +62,7 @@ pub type GeneratedNativeGlyphMetrics =
 pub type GeneratedMathVariant = mathtex_portable_engine_generated::PortableMathVariant;
 
 /// Reexport of the portable engine math assembly part type.
-pub type GeneratedMathAssemblyPart =
-    mathtex_portable_engine_generated::PortableMathAssemblyPart;
+pub type GeneratedMathAssemblyPart = mathtex_portable_engine_generated::PortableMathAssemblyPart;
 
 /// Reexport of the portable engine math kern corner enum.
 pub type GeneratedMathKernCorner = mathtex_portable_engine_generated::PortableMathKernCorner;
@@ -175,30 +174,36 @@ where
             runs: response
                 .runs
                 .into_iter()
-                .map(|run| mathtex_portable_engine_generated::PortableHostBoxRun {
-                    font_name: run.font_name,
-                    font_size: run.font_size,
-                    glyphs: run
-                        .glyphs
-                        .into_iter()
-                        .map(|glyph| mathtex_portable_engine_generated::PortableHostBoxGlyph {
-                            glyph: glyph.glyph,
-                            x: glyph.x,
-                            y: glyph.y,
-                            advance: glyph.advance,
-                        })
-                        .collect(),
-                })
+                .map(
+                    |run| mathtex_portable_engine_generated::PortableHostBoxRun {
+                        font_name: run.font_name,
+                        font_size: run.font_size,
+                        glyphs: run
+                            .glyphs
+                            .into_iter()
+                            .map(
+                                |glyph| mathtex_portable_engine_generated::PortableHostBoxGlyph {
+                                    glyph: glyph.glyph,
+                                    x: glyph.x,
+                                    y: glyph.y,
+                                    advance: glyph.advance,
+                                },
+                            )
+                            .collect(),
+                    },
+                )
                 .collect(),
             rules: response
                 .rules
                 .into_iter()
-                .map(|rule| mathtex_portable_engine_generated::PortableHostBoxRule {
-                    x: rule.x,
-                    y: rule.y,
-                    width: rule.width,
-                    height: rule.height,
-                })
+                .map(
+                    |rule| mathtex_portable_engine_generated::PortableHostBoxRule {
+                        x: rule.x,
+                        y: rule.y,
+                        width: rule.width,
+                        height: rule.height,
+                    },
+                )
                 .collect(),
         })
     }
@@ -483,7 +488,11 @@ where
         };
         self.loaded_fonts
             .get(&font)
-            .and_then(|font| font.data.math_kern_at(GlyphId(glyph), corner, correction_height).ok())
+            .and_then(|font| {
+                font.data
+                    .math_kern_at(GlyphId(glyph), corner, correction_height)
+                    .ok()
+            })
             .unwrap_or(0)
     }
 
@@ -542,12 +551,12 @@ where
         let data = &loaded.data;
         // `what` is the XeTeX_ext OpenType layout selector, params are script and language tags or indices.
         let result = match what {
-            1 => data.ot_glyph_count(),                                 // XeTeX_count_glyphs
-            16 => data.ot_script_count(),                               // XeTeX_OT_count_scripts
-            17 => data.ot_language_count(param1 as u32),                // XeTeX_OT_count_languages
-            18 => data.ot_feature_count(param1 as u32, param2 as u32),  // XeTeX_OT_count_features
-            19 => data.ot_script_tag(param1 as u32),                    // XeTeX_OT_script_code
-            20 => data.ot_language_tag(param1 as u32, param2 as u32),   // XeTeX_OT_language_code
+            1 => data.ot_glyph_count(),                  // XeTeX_count_glyphs
+            16 => data.ot_script_count(),                // XeTeX_OT_count_scripts
+            17 => data.ot_language_count(param1 as u32), // XeTeX_OT_count_languages
+            18 => data.ot_feature_count(param1 as u32, param2 as u32), // XeTeX_OT_count_features
+            19 => data.ot_script_tag(param1 as u32),     // XeTeX_OT_script_code
+            20 => data.ot_language_tag(param1 as u32, param2 as u32), // XeTeX_OT_language_code
             21 => data.ot_feature_tag(param1 as u32, param2 as u32, param3 as u32), // XeTeX_OT_feature_code
             _ => return 0,
         };
@@ -555,7 +564,9 @@ where
     }
 
     fn font_spec(&self, font: GeneratedFontHandle) -> Option<String> {
-        self.loaded_fonts.get(&font).map(|loaded| loaded.spec.clone())
+        self.loaded_fonts
+            .get(&font)
+            .map(|loaded| loaded.spec.clone())
     }
 
     fn shape_native_text(
@@ -939,34 +950,38 @@ impl<'a, 'resources> GeneratedIrBuilder<'a, 'resources> {
             )),
             GeneratedNodeKind::Character => {
                 let cluster: Option<ByteSpan> = None;
-                Some(self.emit(
-                    &snapshot,
-                    origin,
-                    LayoutNodeKind::GlyphRun(GlyphRun {
-                        font: FontRef {
-                            id: FontId(snapshot.font as u32),
-                            name: self
-                                .engine
-                                .native_font_spec(snapshot.font)
-                                .or_else(|| self.engine.font_name(snapshot.font))
-                                .unwrap_or_else(|| format!("generated-font-{}", snapshot.font)),
-                            size: Length::from_scaled_points(self.engine.font_at_size(snapshot.font)),
-                            features: Vec::new(),
-                        },
-                        direction: Direction::LeftToRight,
-                        script: None,
-                        language: None,
-                        glyphs: Vec::from([PositionedGlyph {
-                            glyph_id: GlyphId(snapshot.character as u32),
-                            offset: Point::default(),
-                            advance: Point {
-                                x: Length::from_scaled_points(snapshot.width),
-                                y: Length::ZERO,
+                Some(
+                    self.emit(
+                        &snapshot,
+                        origin,
+                        LayoutNodeKind::GlyphRun(GlyphRun {
+                            font: FontRef {
+                                id: FontId(snapshot.font as u32),
+                                name: self
+                                    .engine
+                                    .native_font_spec(snapshot.font)
+                                    .or_else(|| self.engine.font_name(snapshot.font))
+                                    .unwrap_or_else(|| format!("generated-font-{}", snapshot.font)),
+                                size: Length::from_scaled_points(
+                                    self.engine.font_at_size(snapshot.font),
+                                ),
+                                features: Vec::new(),
                             },
-                            cluster,
-                        }]),
-                    }),
-                ))
+                            direction: Direction::LeftToRight,
+                            script: None,
+                            language: None,
+                            glyphs: Vec::from([PositionedGlyph {
+                                glyph_id: GlyphId(snapshot.character as u32),
+                                offset: Point::default(),
+                                advance: Point {
+                                    x: Length::from_scaled_points(snapshot.width),
+                                    y: Length::ZERO,
+                                },
+                                cluster,
+                            }]),
+                        }),
+                    ),
+                )
             }
             GeneratedNodeKind::NativeWord | GeneratedNodeKind::NativeGlyph => {
                 Some(self.emit_native_glyph_run(snapshot, origin))
@@ -1413,6 +1428,16 @@ impl GeneratedFormatCache {
         })
     }
 
+    /// Borrows a static serialized image without allocating or copying its contents.
+    #[must_use]
+    pub fn from_static_bytes(bytes: &'static [u8]) -> Option<Self> {
+        Some(Self {
+            image: mathtex_portable_engine_generated::PortableFormatImage::from_static_bytes(
+                bytes,
+            )?,
+        })
+    }
+
     /// Creates a new engine instance from this cached format image.
     #[must_use]
     pub fn instantiate<'resources, R>(
@@ -1446,7 +1471,11 @@ const PACKAGED_DEFLATE_LEVEL: u8 = 7;
 
 fn encode_packaged_payload(
     format_bytes: &[u8],
-    font_table: &[(mathtex_portable_engine_generated::PortableFontHandle, String, i32)],
+    font_table: &[(
+        mathtex_portable_engine_generated::PortableFontHandle,
+        String,
+        i32,
+    )],
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(format_bytes.len() + 64);
     out.extend_from_slice(&(format_bytes.len() as u64).to_le_bytes());
@@ -1466,7 +1495,11 @@ fn encode_packaged_payload(
 #[must_use]
 pub fn pack_packaged_format(
     format_bytes: &[u8],
-    font_table: &[(mathtex_portable_engine_generated::PortableFontHandle, String, i32)],
+    font_table: &[(
+        mathtex_portable_engine_generated::PortableFontHandle,
+        String,
+        i32,
+    )],
 ) -> Vec<u8> {
     let payload = encode_packaged_payload(format_bytes, font_table);
     let compressed = miniz_oxide::deflate::compress_to_vec(&payload, PACKAGED_DEFLATE_LEVEL);
@@ -1485,7 +1518,11 @@ pub fn unpack_packaged_format(
     bytes: &[u8],
 ) -> Option<(
     Vec<u8>,
-    Vec<(mathtex_portable_engine_generated::PortableFontHandle, String, i32)>,
+    Vec<(
+        mathtex_portable_engine_generated::PortableFontHandle,
+        String,
+        i32,
+    )>,
 )> {
     fn take<'a>(b: &'a [u8], cursor: &mut usize, n: usize) -> Option<&'a [u8]> {
         let slice = b.get(*cursor..*cursor + n)?;
@@ -1505,9 +1542,7 @@ pub fn unpack_packaged_format(
     let payload_len = u64::from_le_bytes(take(bytes, &mut cursor, 8)?.try_into().ok()?) as usize;
     let compressed = bytes.get(cursor..)?;
     let payload = match compression {
-        PACKAGED_COMPRESSION_DEFLATE => {
-            miniz_oxide::inflate::decompress_to_vec(compressed).ok()?
-        }
+        PACKAGED_COMPRESSION_DEFLATE => miniz_oxide::inflate::decompress_to_vec(compressed).ok()?,
         0 => compressed.to_vec(),
         _ => return None,
     };
@@ -1523,11 +1558,146 @@ pub fn unpack_packaged_format(
     for _ in 0..font_count {
         let handle = u64::from_le_bytes(take(&payload, &mut cursor, 8)?.try_into().ok()?) as usize;
         let size = i32::from_le_bytes(take(&payload, &mut cursor, 4)?.try_into().ok()?);
-        let spec_len = u32::from_le_bytes(take(&payload, &mut cursor, 4)?.try_into().ok()?) as usize;
+        let spec_len =
+            u32::from_le_bytes(take(&payload, &mut cursor, 4)?.try_into().ok()?) as usize;
         let spec = String::from_utf8(take(&payload, &mut cursor, spec_len)?.to_vec()).ok()?;
         font_table.push((handle, spec, size));
     }
     Some((format_bytes, font_table))
+}
+
+const BAKED_FORMAT_MAGIC: &[u8; 8] = b"MTXBAKE\0";
+const BAKED_FORMAT_VERSION: u8 = 1;
+const PORTABLE_VALIDATION_TAG_LEN: usize = 17;
+
+/// A static baked format containing a zero copy image view and its native font table.
+pub struct BakedGeneratedFormat {
+    cache: GeneratedFormatCache,
+    font_table_bytes: &'static [u8],
+    font_count: usize,
+}
+
+impl BakedGeneratedFormat {
+    /// Validates and borrows a baked file without inflating or copying the image.
+    #[must_use]
+    pub fn from_static_bytes(bytes: &'static [u8]) -> Option<Self> {
+        let mut cursor = 0usize;
+        if take_baked(bytes, &mut cursor, BAKED_FORMAT_MAGIC.len())? != BAKED_FORMAT_MAGIC {
+            return None;
+        }
+        if *bytes.get(cursor)? != BAKED_FORMAT_VERSION {
+            return None;
+        }
+        cursor += 1;
+        let tag = take_baked(bytes, &mut cursor, PORTABLE_VALIDATION_TAG_LEN)?;
+        if tag
+            != mathtex_portable_engine_generated::PortableFormatImage::validation_tag().as_slice()
+        {
+            return None;
+        }
+        let format_len =
+            u64::from_le_bytes(take_baked(bytes, &mut cursor, 8)?.try_into().ok()?) as usize;
+        let font_count =
+            u32::from_le_bytes(take_baked(bytes, &mut cursor, 4)?.try_into().ok()?) as usize;
+        let format_bytes = take_baked(bytes, &mut cursor, format_len)?;
+        let cache = GeneratedFormatCache::from_static_bytes(format_bytes)?;
+        let font_table_bytes = bytes.get(cursor..)?;
+        validate_baked_font_table(font_table_bytes, font_count)?;
+        Some(Self {
+            cache,
+            font_table_bytes,
+            font_count,
+        })
+    }
+
+    /// Returns the zero copy generated format cache.
+    #[must_use]
+    pub fn cache(&self) -> &GeneratedFormatCache {
+        &self.cache
+    }
+
+    /// Decodes the native font table for restoration on a new engine instance.
+    #[must_use]
+    pub fn font_table(
+        &self,
+    ) -> Vec<(
+        mathtex_portable_engine_generated::PortableFontHandle,
+        String,
+        i32,
+    )> {
+        decode_baked_font_table(self.font_table_bytes, self.font_count)
+            .expect("validated baked font table became unreadable")
+    }
+}
+
+/// Converts a compressed packaged format into a flat static bake.
+#[must_use]
+pub fn bake_packaged_format(packaged: &[u8]) -> Option<Vec<u8>> {
+    let (format_bytes, font_table) = unpack_packaged_format(packaged)?;
+    if !mathtex_portable_engine_generated::PortableFormatImage::bytes_match_target(&format_bytes) {
+        return None;
+    }
+    let tag = mathtex_portable_engine_generated::PortableFormatImage::validation_tag();
+    // Flat bake: magic, version, target tag, image length, font count, image bytes, then font records.
+    let mut out = Vec::with_capacity(format_bytes.len() + 64);
+    out.extend_from_slice(BAKED_FORMAT_MAGIC);
+    out.push(BAKED_FORMAT_VERSION);
+    out.extend_from_slice(&tag);
+    out.extend_from_slice(&(format_bytes.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(font_table.len() as u32).to_le_bytes());
+    out.extend_from_slice(&format_bytes);
+    for (handle, spec, size) in font_table {
+        out.extend_from_slice(&(handle as u64).to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(spec.len() as u32).to_le_bytes());
+        out.extend_from_slice(spec.as_bytes());
+    }
+    Some(out)
+}
+
+fn take_baked<'a>(bytes: &'a [u8], cursor: &mut usize, len: usize) -> Option<&'a [u8]> {
+    let end = cursor.checked_add(len)?;
+    let slice = bytes.get(*cursor..end)?;
+    *cursor = end;
+    Some(slice)
+}
+
+fn validate_baked_font_table(bytes: &[u8], font_count: usize) -> Option<()> {
+    let mut cursor = 0usize;
+    for _ in 0..font_count {
+        take_baked(bytes, &mut cursor, 8)?;
+        take_baked(bytes, &mut cursor, 4)?;
+        let spec_len =
+            u32::from_le_bytes(take_baked(bytes, &mut cursor, 4)?.try_into().ok()?) as usize;
+        core::str::from_utf8(take_baked(bytes, &mut cursor, spec_len)?).ok()?;
+    }
+    (cursor == bytes.len()).then_some(())
+}
+
+fn decode_baked_font_table(
+    bytes: &[u8],
+    font_count: usize,
+) -> Option<
+    Vec<(
+        mathtex_portable_engine_generated::PortableFontHandle,
+        String,
+        i32,
+    )>,
+> {
+    let mut cursor = 0usize;
+    let mut font_table = Vec::with_capacity(font_count);
+    for _ in 0..font_count {
+        let handle =
+            u64::from_le_bytes(take_baked(bytes, &mut cursor, 8)?.try_into().ok()?) as usize;
+        let size = i32::from_le_bytes(take_baked(bytes, &mut cursor, 4)?.try_into().ok()?);
+        let spec_len =
+            u32::from_le_bytes(take_baked(bytes, &mut cursor, 4)?.try_into().ok()?) as usize;
+        let spec = core::str::from_utf8(take_baked(bytes, &mut cursor, spec_len)?)
+            .ok()?
+            .to_string();
+        font_table.push((handle, spec, size));
+    }
+    (cursor == bytes.len()).then_some(font_table)
 }
 
 impl fmt::Debug for GeneratedFormatCache {
@@ -1817,6 +1987,51 @@ mod tests {
             GeneratedLayoutCapture::from_engine(&second),
             GeneratedLayoutCapture::default()
         );
+    }
+
+    #[test]
+    fn baked_static_format_matches_owned_format_layout() {
+        fn layout(cache: &GeneratedFormatCache) -> Fragment {
+            let mut engine = cache.instantiate(
+                mathtex_portable_engine_generated::EngineProfile::tex(),
+                GeneratedResourceProvider::new(InMemoryResourceProvider::new()),
+            );
+            engine.begin_fragment_capture();
+            assert!(engine.begin_primary_input(
+                "input.tex",
+                br"\catcode`{=1 \catcode`}=2 \hbox{\vrule width 1pt height 2pt depth 0pt}\end"
+                    .to_vec(),
+            ));
+            assert!(engine.run_main_control());
+            engine.end_fragment_capture();
+            let root = engine
+                .captured_fragment_root()
+                .expect("captured fragment root");
+            generated_node_to_fragment(
+                &engine,
+                root,
+                FragmentMetadata {
+                    engine_profile: "tex".into(),
+                    format_id: "round-trip".into(),
+                    fragment_kind: Default::default(),
+                },
+            )
+            .expect("lower captured fragment")
+        }
+
+        let original = GeneratedFormatCache::initialized(
+            mathtex_portable_engine_generated::EngineProfile::tex(),
+        );
+        let format_bytes = original.to_bytes();
+        let packaged = pack_packaged_format(&format_bytes, &[]);
+        let baked = bake_packaged_format(&packaged).expect("bake packaged format");
+        let baked = Box::leak(baked.into_boxed_slice());
+        let static_format =
+            BakedGeneratedFormat::from_static_bytes(baked).expect("load baked static format");
+        let owned = GeneratedFormatCache::from_bytes(&format_bytes).expect("load owned format");
+
+        assert_eq!(layout(&owned), layout(static_format.cache()));
+        assert!(static_format.font_table().is_empty());
     }
 
     #[test]

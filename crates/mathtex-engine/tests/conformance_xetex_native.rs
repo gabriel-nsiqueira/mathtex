@@ -31,7 +31,9 @@ struct MathFont {
 
 const LM_MATH: MathFont = MathFont {
     file: "latinmodern-math.otf",
-    paths: &["/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm-math/latinmodern-math.otf"],
+    paths: &[
+        "/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm-math/latinmodern-math.otf",
+    ],
 };
 
 const STIX_MATH: MathFont = MathFont {
@@ -594,12 +596,24 @@ fn diff(expected: &Norm, actual: &Norm, path: &str, out: &mut Vec<String>) {
                 diff(ce, ca, &format!("{path}/{i}"), out);
             }
         }
-        (Norm::Glyph { glyph: eg, width: ewd }, Norm::Glyph { glyph: ag, width: awd }) => {
+        (
+            Norm::Glyph {
+                glyph: eg,
+                width: ewd,
+            },
+            Norm::Glyph {
+                glyph: ag,
+                width: awd,
+            },
+        ) => {
             if eg != ag {
                 out.push(format!("{path}: glyph id {eg} != {ag}"));
             }
             if !approx(*ewd, *awd) {
-                out.push(format!("{path}: glyph width {ewd} != {awd} (Δ{})", awd - ewd));
+                out.push(format!(
+                    "{path}: glyph width {ewd} != {awd} (Δ{})",
+                    awd - ewd
+                ));
             }
         }
         (Norm::Kern { amount: e }, Norm::Kern { amount: a }) => {
@@ -613,8 +627,16 @@ fn diff(expected: &Norm, actual: &Norm, path: &str, out: &mut Vec<String>) {
             }
         }
         (
-            Norm::Rule { width: ew, height: eh, depth: ed },
-            Norm::Rule { width: aw, height: ah, depth: ad },
+            Norm::Rule {
+                width: ew,
+                height: eh,
+                depth: ed,
+            },
+            Norm::Rule {
+                width: aw,
+                height: ah,
+                depth: ad,
+            },
         ) => {
             // Running dimensions (`*`) are context dependent, skip comparison on either side.
             let cmp = |e: i32, a: i32| e == RUNNING_DIM || a == RUNNING_DIM || approx(e, a);
@@ -646,18 +668,63 @@ struct Case {
 
 fn corpus() -> Vec<Case> {
     vec![
-        Case { name: "native-x", font: LM_MATH, extra: "", body: r"$x$" },
-        Case { name: "native-x-sup-2", font: LM_MATH, extra: "", body: r"$x^2$" },
-        Case { name: "native-x-sub-i", font: LM_MATH, extra: "", body: r"$x_i$" },
-        Case { name: "native-x-sub-i-sup-2", font: LM_MATH, extra: "", body: r"$x_i^2$" },
-        Case { name: "native-a-plus-b", font: LM_MATH, extra: "", body: r"$a+b$" },
+        Case {
+            name: "native-x",
+            font: LM_MATH,
+            extra: "",
+            body: r"$x$",
+        },
+        Case {
+            name: "native-x-sup-2",
+            font: LM_MATH,
+            extra: "",
+            body: r"$x^2$",
+        },
+        Case {
+            name: "native-x-sub-i",
+            font: LM_MATH,
+            extra: "",
+            body: r"$x_i$",
+        },
+        Case {
+            name: "native-x-sub-i-sup-2",
+            font: LM_MATH,
+            extra: "",
+            body: r"$x_i^2$",
+        },
+        Case {
+            name: "native-a-plus-b",
+            font: LM_MATH,
+            extra: "",
+            body: r"$a+b$",
+        },
         // STIX MathKernInfo cut-ins produce visible `\kern` nodes, latinmodern-math has none.
-        Case { name: "kern-stix-F-sup-2", font: STIX_MATH, extra: "", body: r"$F^2$" },
+        Case {
+            name: "kern-stix-F-sup-2",
+            font: STIX_MATH,
+            extra: "",
+            body: r"$F^2$",
+        },
         // `V` subscript: negative BottomRight cut-in, prints as `\kern-1.18999`.
-        Case { name: "kern-stix-V-sub-x", font: STIX_MATH, extra: "", body: r"$V_x$" },
+        Case {
+            name: "kern-stix-V-sub-x",
+            font: STIX_MATH,
+            extra: "",
+            body: r"$V_x$",
+        },
         // `T` subscript: negative BottomRight cut-in, prints as `\kern-0.89998`.
-        Case { name: "kern-stix-T-sub-x", font: STIX_MATH, extra: "", body: r"$T_x$" },
-        Case { name: "kern-stix-V-sub-x-sup-2", font: STIX_MATH, extra: "", body: r"$V_x^2$" },
+        Case {
+            name: "kern-stix-T-sub-x",
+            font: STIX_MATH,
+            extra: "",
+            body: r"$T_x$",
+        },
+        Case {
+            name: "kern-stix-V-sub-x-sup-2",
+            font: STIX_MATH,
+            extra: "",
+            body: r"$V_x^2$",
+        },
         // Growable delimiter selects a larger single glyph variant rather than an assembly.
         Case {
             name: "variant-left-frac-right",
@@ -707,7 +774,10 @@ fn run_case(xetex: &str, case: &Case) -> (Norm, Result<Norm, String>, Vec<String
         return (
             Norm::Skip,
             Err(format!("font {} not found on disk", case.font.file)),
-            vec![format!("{}: SKIP (font {} missing)", case.name, case.font.file)],
+            vec![format!(
+                "{}: SKIP (font {} missing)",
+                case.name, case.font.file
+            )],
         );
     };
     let setup = math_setup(&case.font, case.extra);
@@ -727,7 +797,10 @@ fn run_case(xetex: &str, case: &Case) -> (Norm, Result<Norm, String>, Vec<String
             diff(&expected, actual, case.name, &mut diffs);
         }
         Err(reason) => {
-            diffs.push(format!("{}: engine produced no layout ({reason})", case.name));
+            diffs.push(format!(
+                "{}: engine produced no layout ({reason})",
+                case.name
+            ));
         }
     }
     (expected, actual, diffs)
@@ -747,12 +820,18 @@ fn native_conformance_corpus_reports_engine_vs_xetex() {
     let mut report = String::new();
     for case in corpus() {
         if first_existing(case.font.paths).is_none() {
-            eprintln!("native conformance: SKIP {} (font {} missing)", case.name, case.font.file);
+            eprintln!(
+                "native conformance: SKIP {} (font {} missing)",
+                case.name, case.font.file
+            );
             skipped.push(case.name);
             continue;
         }
         let (expected, actual, diffs) = run_case(&xetex, &case);
-        report.push_str(&format!("\n===== {} ({}) =====\n", case.name, case.font.file));
+        report.push_str(&format!(
+            "\n===== {} ({}) =====\n",
+            case.name, case.font.file
+        ));
         report.push_str(&format!("  body:   {}\n", case.body));
         report.push_str(&format!("  xetex:  {expected:?}\n"));
         report.push_str(&format!("  engine: {actual:?}\n"));
@@ -859,9 +938,14 @@ fn golden_stix_f_superscript_has_math_kern_cut_in() {
     let Norm::Box { children, .. } = parse_showbox(&block) else {
         panic!("expected root hbox");
     };
-    assert!(matches!(children[0], Norm::Glyph { glyph: 8, .. }), "base 'F'");
+    assert!(
+        matches!(children[0], Norm::Glyph { glyph: 8, .. }),
+        "base 'F'"
+    );
     match &children[1] {
-        Norm::Kern { amount } => assert_eq!(*amount, pt_to_sp("0.44"), "math-kern cut-in != 0.44pt"),
+        Norm::Kern { amount } => {
+            assert_eq!(*amount, pt_to_sp("0.44"), "math-kern cut-in != 0.44pt")
+        }
         other => panic!("expected math-kern, got {other:?}"),
     }
 }
@@ -878,8 +962,14 @@ fn golden_left_frac_right_uses_paren_variant_glyphs() {
     let setup = math_setup(&LM_MATH, DELIM_SETUP);
     let block = run_xetex_showbox(&xetex, &setup, r"$\left(\frac{a}{b}\right)$");
     let dump = format!("{:?}", parse_showbox(&block));
-    assert!(dump.contains("Glyph { glyph: 2433"), "left paren variant 2433 absent:\n{dump}");
-    assert!(dump.contains("Glyph { glyph: 2434"), "right paren variant 2434 absent:\n{dump}");
+    assert!(
+        dump.contains("Glyph { glyph: 2433"),
+        "left paren variant 2433 absent:\n{dump}"
+    );
+    assert!(
+        dump.contains("Glyph { glyph: 2434"),
+        "right paren variant 2434 absent:\n{dump}"
+    );
 }
 
 #[test]

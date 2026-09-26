@@ -30,7 +30,13 @@ impl Fmt {
     fn prefixes(self) -> &'static [&'static str] {
         match self {
             // The xelatex input path adds the whole tex// tree after narrower roots.
-            Fmt::Tex => &["tex/xelatex", "tex/latex", "tex/xetex", "tex/generic", "tex"],
+            Fmt::Tex => &[
+                "tex/xelatex",
+                "tex/latex",
+                "tex/xetex",
+                "tex/generic",
+                "tex",
+            ],
             // The tfm font path uses the tfm font tree.
             Fmt::Tfm => &["fonts/tfm"],
             // The opentype font path uses opentype and truetype font trees.
@@ -68,7 +74,10 @@ impl TexmfResources {
                 cur_dir = dir.strip_prefix("./").unwrap_or(dir).to_string();
                 continue;
             }
-            index.entry(line.to_string()).or_default().push(cur_dir.clone());
+            index
+                .entry(line.to_string())
+                .or_default()
+                .push(cur_dir.clone());
         }
 
         if index.is_empty() {
@@ -100,8 +109,7 @@ impl TexmfResources {
             ResourceKind::Encoding => Fmt::Enc,
             ResourceKind::Map => Fmt::Map,
             ResourceKind::Font => {
-                if lower.ends_with(".otf") || lower.ends_with(".ttf") || lower.ends_with(".otc")
-                {
+                if lower.ends_with(".otf") || lower.ends_with(".ttf") || lower.ends_with(".otc") {
                     Fmt::OpenType
                 } else {
                     Fmt::Tfm
@@ -151,7 +159,9 @@ impl TexmfResources {
                 ResourceKind::Map => &[".map"],
                 ResourceKind::Font => &[".tfm", ".otf", ".ttf"],
                 ResourceKind::TexInput => &[".tex", ".ltx", ".def", ".sty", ".cfg", ".fd"],
-                _ => &[".tex", ".sty", ".def", ".cfg", ".ltx", ".fd", ".cls", ".enc"],
+                _ => &[
+                    ".tex", ".sty", ".def", ".cfg", ".ltx", ".fd", ".cls", ".enc",
+                ],
             };
             for e in exts {
                 out.push(format!("{base}{e}"));
@@ -281,7 +291,11 @@ fn dump_latex_boot_transcript() {
     let (kp_err, kp_log) = boot_latex_and_probe(KpseRes, b"", "host oracle");
 
     eprintln!("\n=== SUMMARY: ls-R errors={ls_err}  host oracle errors={kp_err} ===");
-    eprintln!("ls-R requests={} host oracle requests={}", ls_log.len(), kp_log.len());
+    eprintln!(
+        "ls-R requests={} host oracle requests={}",
+        ls_log.len(),
+        kp_log.len()
+    );
     // First index where the request streams diverge.
     let first = (0..ls_log.len().max(kp_log.len())).find(|&i| ls_log.get(i) != kp_log.get(i));
     match first {
@@ -322,7 +336,9 @@ mod testfonts {
     pub struct Fonts(pub RustybuzzFontSystem<ResourceFontSystem<FontProv>>);
     impl Fonts {
         pub fn new(texmf: TexmfResources) -> Self {
-            Self(RustybuzzFontSystem::new(ResourceFontSystem::new(FontProv(texmf))))
+            Self(RustybuzzFontSystem::new(ResourceFontSystem::new(FontProv(
+                texmf,
+            ))))
         }
     }
     impl FontSystem for Fonts {
@@ -651,7 +667,10 @@ fn render_unicode_math_to_svg() {
         svg.len(),
         out.display()
     );
-    assert!(svg.contains("<path"), "rendered SVG has no <path> glyph outlines");
+    assert!(
+        svg.contains("<path"),
+        "rendered SVG has no <path> glyph outlines"
+    );
     assert!(
         path_count >= 2,
         "expected >=2 glyph outlines (x, y), got {path_count}"
@@ -692,10 +711,9 @@ impl mathtex_render::GlyphOutlineSource for MultiFontOutlines {
         let file = parse_font_file(&font.name);
         let mut cache = self.cache.borrow_mut();
         let entry = cache.entry(file.clone()).or_insert_with(|| {
-            self.texmf
-                .read(&file, ResourceKind::Font)
-                .ok()
-                .map(|res| mathtex_engine::font::FontData::new(mathtex_ir::FontId(0), file, res.bytes))
+            self.texmf.read(&file, ResourceKind::Font).ok().map(|res| {
+                mathtex_engine::font::FontData::new(mathtex_ir::FontId(0), file, res.bytes)
+            })
         });
         match entry.as_ref() {
             Some(font_data) => font_data
@@ -797,7 +815,10 @@ fn render_mixed_font_to_svg() {
         out.display()
     );
 
-    assert!(svg_multi.contains("<path"), "multi-font SVG has no outlines");
+    assert!(
+        svg_multi.contains("<path"),
+        "multi-font SVG has no outlines"
+    );
     assert!(
         loaded.len() >= 2,
         "multi-font source should load >=2 font files, loaded {loaded:?}"
@@ -870,7 +891,10 @@ fn render_ssty_script_size() {
         .collect();
     eprintln!("ssty runs = {runs:?}");
     let all: Vec<u32> = runs.iter().flat_map(|(_, g)| g.clone()).collect();
-    assert!(all.contains(&1319), "base x glyph 1319 expected, got {all:?}");
+    assert!(
+        all.contains(&1319),
+        "base x glyph 1319 expected, got {all:?}"
+    );
     assert!(
         all.contains(&1427),
         "ssty script-size x glyph 1427 expected (ssty=1 applied under math script), got {all:?}"
@@ -958,7 +982,11 @@ fn render_cauchy_schwarz_svg() {
 }
 
 /// Renders `body` in `\hbox{...}` via latinmodern-math.otf.
-fn render_native_run(texmf: &TexmfResources, body: &str, tracking: bool) -> (mathtex_ir::Fragment, String) {
+fn render_native_run(
+    texmf: &TexmfResources,
+    body: &str,
+    tracking: bool,
+) -> (mathtex_ir::Fragment, String) {
     render_native_run_spec(texmf, "[latinmodern-math.otf]", body, tracking)
 }
 
@@ -1034,7 +1062,10 @@ fn native_cluster_exact_per_char_source() {
         .source(primary.source)
         .expect("primary source resolves")
         .name;
-    assert_eq!(primary_name, "input", "native run must map to the user fragment");
+    assert_eq!(
+        primary_name, "input",
+        "native run must map to the user fragment"
+    );
 
     let expected = ["a", "b", "c"];
     for (i, want) in expected.iter().enumerate() {
@@ -1045,7 +1076,10 @@ fn native_cluster_exact_per_char_source() {
             .source_map
             .source(range.source)
             .expect("source resolves");
-        assert_eq!(src.name, "input", "glyph {i} span must point at the fragment");
+        assert_eq!(
+            src.name, "input",
+            "glyph {i} span must point at the fragment"
+        );
         let (s, e) = (range.span.start as usize, range.span.end as usize);
         assert!(s <= e && e <= fed.len(), "glyph {i} span [{s},{e}) OOB");
         let got = &fed[s..e];
@@ -1164,7 +1198,10 @@ fn native_cluster_ligature_maps_to_union() {
         .source(primary.source)
         .expect("primary source resolves")
         .name;
-    assert_eq!(primary_name, "input", "native run must map to the user fragment");
+    assert_eq!(
+        primary_name, "input",
+        "native run must map to the user fragment"
+    );
 
     let body_at = hbox_body_offset(&fed, "fix");
 
@@ -1176,7 +1213,10 @@ fn native_cluster_ligature_maps_to_union() {
             .source_map
             .source(range.source)
             .expect("source resolves");
-        assert_eq!(src.name, "input", "glyph {i} span must point at the fragment");
+        assert_eq!(
+            src.name, "input",
+            "glyph {i} span must point at the fragment"
+        );
         let (s, e) = (range.span.start as usize, range.span.end as usize);
         assert!(s <= e && e <= fed.len(), "glyph {i} span [{s},{e}) OOB");
         (s, e, fed[s..e].to_string())
@@ -1184,16 +1224,36 @@ fn native_cluster_ligature_maps_to_union() {
 
     // Glyph 0 is the ﬁ ligature and maps to "fi".
     let (lig_s, lig_e, lig) = slice_of(0);
-    assert_eq!(lig, "fi", "ligature glyph must map to the union source span \"fi\", got {lig:?}");
-    assert_eq!(lig_s, body_at, "ligature span must start at the real tracked 'f' offset");
-    assert_eq!(lig_e, body_at + 2, "ligature span must end after 'i' (union of both chars)");
+    assert_eq!(
+        lig, "fi",
+        "ligature glyph must map to the union source span \"fi\", got {lig:?}"
+    );
+    assert_eq!(
+        lig_s, body_at,
+        "ligature span must start at the real tracked 'f' offset"
+    );
+    assert_eq!(
+        lig_e,
+        body_at + 2,
+        "ligature span must end after 'i' (union of both chars)"
+    );
 
     // Glyph 1 is x, contiguous with the ligature span.
     let (x_s, x_e, x) = slice_of(1);
-    assert_eq!(x, "x", "trailing non-ligature char must map to itself, got {x:?}");
-    assert_eq!(x_s, body_at + 2, "x span must start right after the ﬁ union");
+    assert_eq!(
+        x, "x",
+        "trailing non-ligature char must map to itself, got {x:?}"
+    );
+    assert_eq!(
+        x_s,
+        body_at + 2,
+        "x span must start right after the ﬁ union"
+    );
     assert_eq!(x_e, body_at + 3, "x span must be a single char wide");
-    assert_eq!(lig_e, x_s, "ligature union and the next glyph must be contiguous (no gap/overlap)");
+    assert_eq!(
+        lig_e, x_s,
+        "ligature union and the next glyph must be contiguous (no gap/overlap)"
+    );
 
     assert!(
         (0..run.glyphs.len()).all(|i| fragment.glyph_source_range(node.id, i).is_some()),
@@ -1228,7 +1288,10 @@ fn native_cluster_triple_ligature_single_glyph_union() {
         .source_map
         .source(range.source)
         .expect("source resolves");
-    assert_eq!(src.name, "input", "ligature span must point at the fragment");
+    assert_eq!(
+        src.name, "input",
+        "ligature span must point at the fragment"
+    );
     let (s, e) = (range.span.start as usize, range.span.end as usize);
     assert!(s <= e && e <= fed.len(), "ﬃ span [{s},{e}) OOB");
     assert_eq!(
@@ -1236,7 +1299,10 @@ fn native_cluster_triple_ligature_single_glyph_union() {
         "ffi",
         "ﬃ ligature must map to the union of all three source chars \"ffi\""
     );
-    assert_eq!(s, body_at, "union must start at the real tracked 'f' offset");
+    assert_eq!(
+        s, body_at,
+        "union must start at the real tracked 'f' offset"
+    );
     assert_eq!(e, body_at + 3, "union must span all three chars f,f,i");
 }
 
@@ -1300,7 +1366,10 @@ fn glue_set_ratio_stretches() {
                 .and_then(|s| s.parse::<f64>().ok())
         })
         .fold(0.0_f64, f64::max);
-    eprintln!("glue-set: box width={:?}, max glyph x={max_x:.2}", fragment.surface.width);
+    eprintln!(
+        "glue-set: box width={:?}, max glyph x={max_x:.2}",
+        fragment.surface.width
+    );
     assert!(
         max_x > 100.0,
         "glue set-ratio not applied: trailing glyph at x={max_x:.2} (expected ~115 in a stretched 120pt box, ~16 if natural width)"
@@ -1462,7 +1531,10 @@ fn time_cauchy_schwarz_endtoend_and_preloaded() {
     eprintln!("------------------------------------------------------------------");
     eprintln!("WARM per-equation (preloaded image -> SVG), {K} runs, all 33 glyphs:");
     eprintln!("  min {warm_min:>9.2?}   median {warm_med:>9.2?}   max {warm_max:>9.2?}");
-    eprintln!("  speedup vs cold (median): {:.1}x", end_to_end.as_secs_f64() / warm_med.as_secs_f64());
+    eprintln!(
+        "  speedup vs cold (median): {:.1}x",
+        end_to_end.as_secs_f64() / warm_med.as_secs_f64()
+    );
     eprintln!("==================================================================");
 }
 
@@ -1570,7 +1642,10 @@ fn format_image_serialization_roundtrip() {
         reload_glyphs, 33,
         "reloaded-from-bytes render produced {reload_glyphs} glyphs (format image is lossy!)"
     );
-    assert!(reload_svg.contains("<path"), "reloaded render has no outlines");
+    assert!(
+        reload_svg.contains("<path"),
+        "reloaded render has no outlines"
+    );
     assert_eq!(
         reload_svg, direct_svg,
         "SVG reloaded from bytes differs from the direct render, serialization is not lossless"
@@ -1596,8 +1671,7 @@ fn latex_kernel_format_bytes(texmf: &TexmfResources) -> &'static [u8] {
             let disk = std::env::var("MTX_FMT_CACHE_DIR").ok().map(|d| {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 latex.hash(&mut h);
-                std::path::Path::new(&d)
-                    .join(format!("latex-kernel-{:016x}.fmtcache", h.finish()))
+                std::path::Path::new(&d).join(format!("latex-kernel-{:016x}.fmtcache", h.finish()))
             });
             if let Some(p) = &disk {
                 if let Ok(bytes) = std::fs::read(p) {
@@ -1674,8 +1748,8 @@ fn render_latex_math(
     tracking: bool,
 ) -> (mathtex_ir::Fragment, String) {
     let bytes = latex_kernel_format_bytes(texmf);
-    let cache = GeneratedFormatCache::from_bytes(bytes)
-        .expect("reload cached latex kernel format image");
+    let cache =
+        GeneratedFormatCache::from_bytes(bytes).expect("reload cached latex kernel format image");
     let mut engine = cache.instantiate(
         pe::EngineProfile::xetex(),
         GeneratedResourceProvider::new(texmf),
@@ -1686,11 +1760,20 @@ fn render_latex_math(
 /// Regression for a single char degree on the `\Uradical` path.
 #[test]
 fn sqrt_single_char_degree_maps_to_typed_char() {
-    let Some(texmf) = TexmfResources::from_texlive() else { eprintln!("SKIP"); return; };
-    let latex = texmf.read("latex.ltx", ResourceKind::TexInput).expect("latex.ltx").bytes;
+    let Some(texmf) = TexmfResources::from_texlive() else {
+        eprintln!("SKIP");
+        return;
+    };
+    let latex = texmf
+        .read("latex.ltx", ResourceKind::TexInput)
+        .expect("latex.ltx")
+        .bytes;
     let cache = GeneratedFormatCache::initialized(pe::EngineProfile::xetex());
     let mut engine = cache
-        .instantiate(pe::EngineProfile::xetex(), GeneratedResourceProvider::new(&texmf))
+        .instantiate(
+            pe::EngineProfile::xetex(),
+            GeneratedResourceProvider::new(&texmf),
+        )
         .with_font_platform(mathtex_engine::GeneratedFontSystemAdapter::new(
             testfonts::Fonts::new(TexmfResources::from_texlive().expect("texmf")),
         ));
@@ -1796,7 +1879,9 @@ fn phantom_radical_index_box_maps_to_index_slot() {
     );
     // No box may overshoot the index slot into the radicand.
     assert!(
-        !box_slices.iter().any(|s| s.starts_with(slot) && s.len() > slot.len()),
+        !box_slices
+            .iter()
+            .any(|s| s.starts_with(slot) && s.len() > slot.len()),
         "a box overshoots the index slot into the radicand: {box_slices:?}"
     );
 }
@@ -1822,7 +1907,10 @@ fn cached_kernel_format_matches_cold_boot() {
     assert!(engine.begin_primary_input("latex.ltx", latex));
     engine.run_format_initialization();
     let (cold, fed_k) = feed_latex_math_fragment(&mut engine, body, true);
-    assert_eq!(fed_c, fed_k, "fed program differs between cached and cold paths");
+    assert_eq!(
+        fed_c, fed_k,
+        "fed program differs between cached and cold paths"
+    );
     let pairs = |f: &mathtex_ir::Fragment, fed: &str| -> Vec<(&'static str, String)> {
         f.nodes
             .iter()
@@ -1867,16 +1955,23 @@ fn ltx_visible_slices(texmf: &TexmfResources, body: &str) -> Vec<(LayoutNodeKind
         .iter()
         .filter(|n| ltx_is_visible(&n.kind))
         .map(|n| {
-            let range = fragment
-                .primary_source_for_node(n.id)
-                .unwrap_or_else(|| panic!("{body:?}: visible node {:?} has no primary source", n.id));
+            let range = fragment.primary_source_for_node(n.id).unwrap_or_else(|| {
+                panic!("{body:?}: visible node {:?} has no primary source", n.id)
+            });
             let src = fragment
                 .source_map
                 .source(range.source)
                 .expect("source resolves");
-            assert_eq!(src.name, "input", "{body:?}: span must point at the user fragment");
+            assert_eq!(
+                src.name, "input",
+                "{body:?}: span must point at the user fragment"
+            );
             let (s, e) = (range.span.start as usize, range.span.end as usize);
-            assert!(s <= e && e <= fed.len(), "{body:?}: span [{s},{e}) OOB len {}", fed.len());
+            assert!(
+                s <= e && e <= fed.len(),
+                "{body:?}: span [{s},{e}) OOB len {}",
+                fed.len()
+            );
             (n.kind.clone(), fed[s..e].to_string())
         })
         .collect()
@@ -1917,11 +2012,20 @@ fn real_latex_sqrt_degree_full_construct_extent() {
         "vinculum rule must cover \\sqrt[3]{{x}}; got {rules:?}"
     );
     // Radicand and degree leaves must keep their own source chars.
-    assert!(glyphs.iter().any(|g| g == "x"), "radicand must slice to x; got {glyphs:?}");
-    assert!(glyphs.iter().any(|g| g == "3"), "degree digit must slice to \"3\"; got {glyphs:?}");
+    assert!(
+        glyphs.iter().any(|g| g == "x"),
+        "radicand must slice to x; got {glyphs:?}"
+    );
+    assert!(
+        glyphs.iter().any(|g| g == "3"),
+        "degree digit must slice to \"3\"; got {glyphs:?}"
+    );
     // Exactly one glyph maps to the full extent.
     assert_eq!(
-        glyphs.iter().filter(|g| g.as_str() == r"\sqrt[3]{x}").count(),
+        glyphs
+            .iter()
+            .filter(|g| g.as_str() == r"\sqrt[3]{x}")
+            .count(),
         1,
         "exactly one glyph (the surd) is the full extent; got {glyphs:?}"
     );
@@ -1950,7 +2054,10 @@ fn real_latex_sqrt_no_degree_full_extent() {
         rules.iter().any(|r| r == r"\sqrt{y}"),
         "vinculum rule must cover \\sqrt{{y}}; got {rules:?}"
     );
-    assert!(glyphs.iter().any(|g| g == "y"), "radicand must slice to y; got {glyphs:?}");
+    assert!(
+        glyphs.iter().any(|g| g == "y"),
+        "radicand must slice to y; got {glyphs:?}"
+    );
 }
 
 #[test]
@@ -1994,8 +2101,16 @@ fn real_latex_frac_and_overline_full_extent() {
         "fraction bar must cover \\frac{{a}}{{b}}; got {:?}",
         ltx_rules(&frac)
     );
-    assert!(ltx_glyphs(&frac).iter().any(|g| g == "a"), "numerator a; got {:?}", ltx_glyphs(&frac));
-    assert!(ltx_glyphs(&frac).iter().any(|g| g == "b"), "denominator b; got {:?}", ltx_glyphs(&frac));
+    assert!(
+        ltx_glyphs(&frac).iter().any(|g| g == "a"),
+        "numerator a; got {:?}",
+        ltx_glyphs(&frac)
+    );
+    assert!(
+        ltx_glyphs(&frac).iter().any(|g| g == "b"),
+        "denominator b; got {:?}",
+        ltx_glyphs(&frac)
+    );
 
     let over = ltx_visible_slices(&texmf, r"\overline{x}");
     assert!(
@@ -2003,7 +2118,11 @@ fn real_latex_frac_and_overline_full_extent() {
         "overline rule must cover \\overline{{x}}; got {:?}",
         ltx_rules(&over)
     );
-    assert!(ltx_glyphs(&over).iter().any(|g| g == "x"), "overline content x; got {:?}", ltx_glyphs(&over));
+    assert!(
+        ltx_glyphs(&over).iter().any(|g| g == "x"),
+        "overline content x; got {:?}",
+        ltx_glyphs(&over)
+    );
 }
 
 #[test]
@@ -2028,8 +2147,14 @@ fn real_latex_nested_sqrt_frac_altitude_split() {
         rules.iter().any(|r| r == r"\frac{q}{2}"),
         "inner fraction bar must keep its OWN \\frac{{q}}{{2}} (not \\frac, not the radical); got {rules:?}"
     );
-    assert!(glyphs.iter().any(|g| g == "q"), "numerator leaf q; got {glyphs:?}");
-    assert!(glyphs.iter().any(|g| g == "2"), "denominator leaf 2; got {glyphs:?}");
+    assert!(
+        glyphs.iter().any(|g| g == "q"),
+        "numerator leaf q; got {glyphs:?}"
+    );
+    assert!(
+        glyphs.iter().any(|g| g == "2"),
+        "denominator leaf 2; got {glyphs:?}"
+    );
 }
 
 #[test]
@@ -2055,20 +2180,33 @@ fn real_latex_cardano_every_surd_and_bar() {
     // Both radical surd and vinculum pairs map to their whole `\sqrt...` extent.
     let inner = r"\sqrt{\frac{q^2}{4}+\frac{p^3}{27}}";
     let outer = r"\sqrt[3]{-\frac{q}{2}+\sqrt{\frac{q^2}{4}+\frac{p^3}{27}}}";
-    assert!(all.iter().any(|s| *s == inner), "inner radical must map to {inner:?}; got {all:?}");
-    assert!(all.iter().any(|s| *s == outer), "outer radical must map to {outer:?}; got {all:?}");
+    assert!(
+        all.iter().any(|s| *s == inner),
+        "inner radical must map to {inner:?}; got {all:?}"
+    );
+    assert!(
+        all.iter().any(|s| *s == outer),
+        "outer radical must map to {outer:?}; got {all:?}"
+    );
 
     // Every mark anchored at `\sqrt` is a whole construct.
     for s in &all {
         if s.starts_with(r"\sqrt") {
-            assert!(s.ends_with('}'), "radical mark {s:?} must be a whole \\sqrt...{{..}}");
+            assert!(
+                s.ends_with('}'),
+                "radical mark {s:?} must be a whole \\sqrt...{{..}}"
+            );
         }
     }
 
     // Surd glyph maps to the outer extent exactly once.
-    let surd_count = ltx_glyphs(&slices).iter().filter(|g| g.as_str() == outer).count();
+    let surd_count = ltx_glyphs(&slices)
+        .iter()
+        .filter(|g| g.as_str() == outer)
+        .count();
     assert_eq!(
-        surd_count, 1,
+        surd_count,
+        1,
         "exactly one glyph (the surd) maps to the outer extent; a 2nd means the degree \
          floored to the construct. glyphs: {:?}",
         ltx_glyphs(&slices)
@@ -2105,7 +2243,10 @@ fn real_latex_left_right_delimiters_full_extent() {
         "both delimiter glyphs must map to the whole {group:?}; got {glyphs:?}"
     );
     for leaf in ["x", "+", "y"] {
-        assert!(glyphs.iter().any(|g| g == leaf), "leaf {leaf:?} keeps its char; got {glyphs:?}");
+        assert!(
+            glyphs.iter().any(|g| g == leaf),
+            "leaf {leaf:?} keeps its char; got {glyphs:?}"
+        );
     }
     for g in &glyphs {
         assert_ne!(g, r"\right", "delimiter floored to bare \\right");
@@ -2126,7 +2267,10 @@ fn real_latex_unbraced_accent_full_extent() {
         glyphs.iter().any(|g| g == r"\dot q"),
         "unbraced accent glyph must map to \"\\dot q\"; got {glyphs:?}"
     );
-    assert!(glyphs.iter().any(|g| g == "q"), "accentee keeps its char q; got {glyphs:?}");
+    assert!(
+        glyphs.iter().any(|g| g == "q"),
+        "accentee keeps its char q; got {glyphs:?}"
+    );
     assert!(
         !glyphs.iter().any(|g| g == r"\dot"),
         "accent must not floor to bare \\dot; got {glyphs:?}"
@@ -2148,8 +2292,14 @@ fn real_latex_choose_delimiters_full_extent() {
         2,
         "both \\choose delimiter glyphs must map to the whole {group:?}; got {glyphs:?}"
     );
-    assert!(glyphs.iter().any(|g| g == "n"), "numerator n keeps its char; got {glyphs:?}");
-    assert!(glyphs.iter().any(|g| g == "k"), "denominator k keeps its char; got {glyphs:?}");
+    assert!(
+        glyphs.iter().any(|g| g == "n"),
+        "numerator n keeps its char; got {glyphs:?}"
+    );
+    assert!(
+        glyphs.iter().any(|g| g == "k"),
+        "denominator k keeps its char; got {glyphs:?}"
+    );
     assert!(
         !glyphs.iter().any(|g| g == r"\choose"),
         "delimiters must not floor to bare \\choose; got {glyphs:?}"
@@ -2184,7 +2334,10 @@ fn render_sandboxed(texmf: &TexmfResources, body: &str) -> Result<(), String> {
     if ran {
         Ok(())
     } else {
-        Err(engine.last_error_message().unwrap_or("rejected").to_string())
+        Err(engine
+            .last_error_message()
+            .unwrap_or("rejected")
+            .to_string())
     }
 }
 
@@ -2232,7 +2385,9 @@ fn array_row_boundary_does_not_leak_next_row_span() {
         let empty_box_slices: Vec<&str> = fragment
             .nodes
             .iter()
-            .filter(|n| matches!(&n.kind, mathtex_ir::LayoutNodeKind::Box(b) if b.children.is_empty()))
+            .filter(
+                |n| matches!(&n.kind, mathtex_ir::LayoutNodeKind::Box(b) if b.children.is_empty()),
+            )
             .filter_map(|n| fragment.primary_source_for_node(n.id))
             .filter_map(|r| fed.get(r.span.start as usize..r.span.end as usize))
             .collect();

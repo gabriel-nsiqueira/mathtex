@@ -8,9 +8,7 @@ use mathtex_engine::{
     portable_engine::EngineProfile, GeneratedFormatCache, GeneratedResourceProvider,
     InMemoryResourceProvider, ResourceKind,
 };
-use mathtex_ir::{
-    BoxKind, Fragment, FragmentMetadata, Length, LayoutNodeKind, NodeId,
-};
+use mathtex_ir::{BoxKind, Fragment, FragmentMetadata, LayoutNodeKind, Length, NodeId};
 
 // The engine uses TeX integer arithmetic, so any nonzero diff is a real divergence.
 const SP_TOLERANCE: i32 = 0;
@@ -77,7 +75,11 @@ fn resolve_running_rule(child: &Norm, box_w: i32, box_h: i32, box_d: i32) -> Nor
             depth,
         } => Norm::Rule {
             width: if *width == RUNNING_DIM { box_w } else { *width },
-            height: if *height == RUNNING_DIM { box_h } else { *height },
+            height: if *height == RUNNING_DIM {
+                box_h
+            } else {
+                *height
+            },
             depth: if *depth == RUNNING_DIM { box_d } else { *depth },
         },
         other => other.clone(),
@@ -140,12 +142,8 @@ fn diff(expected: &Norm, actual: &Norm, path: &str, out: &mut Vec<String>) {
             diff_dim(path, "rule.height", *eh, *ah, out);
             diff_dim(path, "rule.depth", *ed, *ad, out);
         }
-        (Norm::Glue { amount: e }, Norm::Glue { amount: a }) => {
-            diff_dim(path, "glue", *e, *a, out)
-        }
-        (Norm::Kern { amount: e }, Norm::Kern { amount: a }) => {
-            diff_dim(path, "kern", *e, *a, out)
-        }
+        (Norm::Glue { amount: e }, Norm::Glue { amount: a }) => diff_dim(path, "glue", *e, *a, out),
+        (Norm::Kern { amount: e }, Norm::Kern { amount: a }) => diff_dim(path, "kern", *e, *a, out),
         (
             Norm::Char {
                 glyph: eg,
@@ -458,7 +456,10 @@ fn engine_layout(setup: &str, body: &str, fonts: &[(&str, &[u8])]) -> Result<Nor
         resources = resources.with_resource(*name, ResourceKind::Font, bytes.to_vec());
     }
     let format = GeneratedFormatCache::initialized(EngineProfile::tex());
-    let mut engine = format.instantiate(EngineProfile::tex(), GeneratedResourceProvider::new(resources));
+    let mut engine = format.instantiate(
+        EngineProfile::tex(),
+        GeneratedResourceProvider::new(resources),
+    );
 
     let program = format!(r"\catcode`{{=1 \catcode`}}=2 {setup} \hbox{{{body}}}\end");
     engine.begin_fragment_capture();
@@ -713,10 +714,7 @@ fn corpus() -> Vec<Case> {
 /// Copy engine char advances into the oracle tree, `\showbox` does not print per-char widths.
 fn reconcile_char_widths(expected: &mut Norm, actual: &Norm) {
     match (expected, actual) {
-        (
-            Norm::Box { children: ec, .. },
-            Norm::Box { children: ac, .. },
-        ) => {
+        (Norm::Box { children: ec, .. }, Norm::Box { children: ac, .. }) => {
             for (ce, ca) in ec.iter_mut().zip(ac.iter()) {
                 reconcile_char_widths(ce, ca);
             }
@@ -747,7 +745,10 @@ fn run_case(tex: &PathBuf, case: &Case) -> (Norm, Result<Norm, String>, Vec<Stri
             diff(&expected, actual, case.name, &mut diffs);
         }
         Err(reason) => {
-            diffs.push(format!("{}: engine produced no layout ({reason})", case.name));
+            diffs.push(format!(
+                "{}: engine produced no layout ({reason})",
+                case.name
+            ));
         }
     }
     (expected, actual, diffs)
@@ -793,19 +794,34 @@ fn conformance_corpus_reports_engine_vs_tex() {
 
     // EXPECTED_MATCH catches regressions, KNOWN_DIVERGENT catches silent progress.
     const EXPECTED_MATCH: &[&str] = &[
-        "hbox-vrule", "hbox-glyph-A", "hbox-glyph-AB", "hbox-kern", "text-A-b", "math-x",
-        "math-x-sup-2", "math-x-sub-i", "math-a-plus-b", "math-frac-a-b", "math-sqrt-x",
-        "text-hi", "par-linebreak",
+        "hbox-vrule",
+        "hbox-glyph-A",
+        "hbox-glyph-AB",
+        "hbox-kern",
+        "text-A-b",
+        "math-x",
+        "math-x-sup-2",
+        "math-x-sub-i",
+        "math-a-plus-b",
+        "math-frac-a-b",
+        "math-sqrt-x",
+        "text-hi",
+        "par-linebreak",
     ];
     // The whole corpus now matches real tex within tolerance.
     const KNOWN_DIVERGENT: &[&str] = &[];
-    let regressed: Vec<&&str> = EXPECTED_MATCH.iter().filter(|n| mismatched.contains(n)).collect();
+    let regressed: Vec<&&str> = EXPECTED_MATCH
+        .iter()
+        .filter(|n| mismatched.contains(n))
+        .collect();
     assert!(
         regressed.is_empty(),
         "engine REGRESSED vs tex on {regressed:?}\n{report}"
     );
-    let newly_matching: Vec<&&str> =
-        KNOWN_DIVERGENT.iter().filter(|n| matched.contains(n)).collect();
+    let newly_matching: Vec<&&str> = KNOWN_DIVERGENT
+        .iter()
+        .filter(|n| matched.contains(n))
+        .collect();
     assert!(
         newly_matching.is_empty(),
         "{newly_matching:?} now match tex, promote them from KNOWN_DIVERGENT to EXPECTED_MATCH"

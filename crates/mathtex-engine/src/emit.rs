@@ -102,4 +102,3 @@ impl EmitNode {
         self
     }
 }
-

@@ -27,7 +27,13 @@ impl Fmt {
     fn prefixes(self) -> &'static [&'static str] {
         match self {
             // Search entries for TeX input files.
-            Fmt::Tex => &["tex/xelatex", "tex/latex", "tex/xetex", "tex/generic", "tex"],
+            Fmt::Tex => &[
+                "tex/xelatex",
+                "tex/latex",
+                "tex/xetex",
+                "tex/generic",
+                "tex",
+            ],
             // Search entries for TeX font metrics.
             Fmt::Tfm => &["fonts/tfm"],
             // Search entries for font programs.
@@ -173,7 +179,9 @@ impl TexmfResources {
                 ResourceKind::Map => &[".map"],
                 ResourceKind::Font => &[".tfm", ".otf", ".ttf"],
                 ResourceKind::TexInput => &[".tex", ".ltx", ".def", ".sty", ".cfg", ".fd"],
-                _ => &[".tex", ".sty", ".def", ".cfg", ".ltx", ".fd", ".cls", ".enc"],
+                _ => &[
+                    ".tex", ".sty", ".def", ".cfg", ".ltx", ".fd", ".cls", ".enc",
+                ],
             };
             for e in exts {
                 out.push(format!("{base}{e}"));

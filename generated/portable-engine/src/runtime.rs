@@ -2545,15 +2545,7 @@ impl PortableTexState {
         out
     }
 
-    /// Reconstruct an engine state from [`Self::to_portable_bytes`] output.
-    ///
-    /// Returns `None` if the magic/stamps don't match the loading target or the
-    /// buffer is truncated. The input-file pointer table is nulled (those are
-    /// process-local OS handles). `fontlayoutengine`/`fontmapping` hold *integer
-    /// font handles*, not addresses, so they are preserved verbatim and the
-    /// caller re-binds them to a fresh font platform via
-    /// [`FontPlatform::restore_font_table`] before rendering.
-    pub(crate) fn from_portable_bytes(bytes: &[u8]) -> Option<Box<Self>> {
+    fn portable_bytes_header_len(bytes: &[u8]) -> Option<usize> {
         let mut cursor = 0usize;
         if bytes.get(cursor..cursor + PORTABLE_FORMAT_MAGIC.len())? != &PORTABLE_FORMAT_MAGIC[..] {
             return None;
@@ -2569,6 +2561,28 @@ impl PortableTexState {
         if struct_size != core::mem::size_of::<Self>() {
             return None;
         }
+        bytes.get(cursor..cursor + struct_size)?;
+        Some(cursor)
+    }
+
+    fn portable_validation_tag() -> [u8; 17] {
+        let mut tag = [0u8; 17];
+        tag[..8].copy_from_slice(&PORTABLE_FORMAT_MAGIC);
+        tag[8] = core::mem::size_of::<usize>() as u8;
+        tag[9..].copy_from_slice(&(core::mem::size_of::<Self>() as u64).to_le_bytes());
+        tag
+    }
+
+    /// Reconstruct an engine state from [`Self::to_portable_bytes`] output.
+    ///
+    /// Returns `None` if the magic/stamps don't match the loading target or the
+    /// buffer is truncated. The input-file pointer table is nulled (those are
+    /// process-local OS handles). `fontlayoutengine`/`fontmapping` hold *integer
+    /// font handles*, not addresses, so they are preserved verbatim and the
+    /// caller re-binds them to a fresh font platform via
+    /// [`FontPlatform::restore_font_table`] before rendering.
+    pub(crate) fn from_portable_bytes(bytes: &[u8]) -> Option<Box<Self>> {
+        let mut cursor = Self::portable_bytes_header_len(bytes)?;
         let image = bytes.get(cursor..cursor + core::mem::size_of::<Self>())?;
         cursor += core::mem::size_of::<Self>();
 
@@ -2857,7 +2871,12 @@ impl EngineProfile {
 }
 
 pub struct PortableFormatImage {
-    state: Box<PortableTexState>,
+    source: PortableFormatSource,
+}
+
+enum PortableFormatSource {
+    Owned(Box<PortableTexState>),
+    Static(&'static [u8]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2923,8 +2942,13 @@ pub struct PortableNodeSnapshot {
 
 impl Clone for PortableFormatImage {
     fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone_boxed(),
+        match &self.source {
+            PortableFormatSource::Owned(state) => Self {
+                source: PortableFormatSource::Owned(state.clone_boxed()),
+            },
+            PortableFormatSource::Static(bytes) => Self {
+                source: PortableFormatSource::Static(bytes),
+            },
         }
     }
 }
@@ -2932,7 +2956,7 @@ impl Clone for PortableFormatImage {
 impl PortableFormatImage {
     pub fn empty() -> Self {
         Self {
-            state: PortableTexState::new_boxed_default(),
+            source: PortableFormatSource::Owned(PortableTexState::new_boxed_default()),
         }
     }
 
@@ -2940,14 +2964,45 @@ impl PortableFormatImage {
         let mut state = state.clone_boxed();
         state.seal_as_format_snapshot();
         Self {
-            state,
+            source: PortableFormatSource::Owned(state),
         }
     }
 
     /// Wrap an already-sealed engine state, taking ownership without cloning.
     /// Used by [`PortableTexEngine::into_format`].
     fn from_sealed_state(state: Box<PortableTexState>) -> Self {
-        Self { state }
+        Self {
+            source: PortableFormatSource::Owned(state),
+        }
+    }
+
+    fn instantiate_state(&self) -> Box<PortableTexState> {
+        match &self.source {
+            PortableFormatSource::Owned(state) => state.clone_boxed(),
+            PortableFormatSource::Static(bytes) => PortableTexState::from_portable_bytes(bytes)
+                .expect("validated static format image became unreadable"),
+        }
+    }
+
+    /// Returns the same-target validation tag stored at the start of every image.
+    #[must_use]
+    pub fn validation_tag() -> [u8; 17] {
+        PortableTexState::portable_validation_tag()
+    }
+
+    /// Reports whether a serialized image carries this build target's validation tag.
+    #[must_use]
+    pub fn bytes_match_target(bytes: &[u8]) -> bool {
+        PortableTexState::portable_bytes_header_len(bytes).is_some()
+    }
+
+    /// Borrows a static serialized image without allocating or copying its contents.
+    #[must_use]
+    pub fn from_static_bytes(bytes: &'static [u8]) -> Option<Self> {
+        Self::bytes_match_target(bytes).then_some(())?;
+        Some(Self {
+            source: PortableFormatSource::Static(bytes),
+        })
     }
 
     /// Serialize this format image to a portable byte buffer (a dumped `.fmt`)
@@ -2955,7 +3010,10 @@ impl PortableFormatImage {
     /// [`PortableTexState::to_portable_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.state.to_portable_bytes()
+        match &self.source {
+            PortableFormatSource::Owned(state) => state.to_portable_bytes(),
+            PortableFormatSource::Static(bytes) => bytes.to_vec(),
+        }
     }
 
     /// Reload a format image previously produced by [`Self::to_bytes`]. Returns
@@ -2963,7 +3021,7 @@ impl PortableFormatImage {
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         Some(Self {
-            state: PortableTexState::from_portable_bytes(bytes)?,
+            source: PortableFormatSource::Owned(PortableTexState::from_portable_bytes(bytes)?),
         })
     }
 
@@ -2971,9 +3029,13 @@ impl PortableFormatImage {
     /// image — the dominant runtime memory footprint.
     #[must_use]
     pub fn state_array_bytes(&self) -> usize {
-        self.state.state_array_bytes()
+        match &self.source {
+            PortableFormatSource::Owned(state) => state.state_array_bytes(),
+            PortableFormatSource::Static(bytes) => PortableTexState::from_portable_bytes(bytes)
+                .expect("validated static format image became unreadable")
+                .state_array_bytes(),
+        }
     }
-
 }
 
 /// Size in bytes of one TeX `memory_word` in this build. Real XeTeX packs it to
@@ -3053,7 +3115,7 @@ impl<'resources> PortableTexEngine<'resources> {
         R: ResourceProvider + 'resources,
     {
         Self {
-            state: format.state.clone_boxed(),
+            state: format.instantiate_state(),
             profile,
             resources: Box::new(resources),
             fonts: Box::<EmptyFontPlatform>::default(),

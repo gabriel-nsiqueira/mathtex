@@ -420,5 +420,4 @@ mod tests {
         assert_eq!(sink.drain()[0].severity, DiagnosticSeverity::Warning);
         assert!(sink.is_empty());
     }
-
 }

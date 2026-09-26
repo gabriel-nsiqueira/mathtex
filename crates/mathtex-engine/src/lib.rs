@@ -33,11 +33,12 @@ pub use format::{
     SessionState,
 };
 pub use generated::{
-    generated_node_to_fragment, EmptyGeneratedFontPlatform, EmptyGeneratedPlatform, GeneratedClock,
-    GeneratedFontHandle, GeneratedFontMetrics, GeneratedFontPlatform, GeneratedFontSystemAdapter,
-    GeneratedFormatCache, GeneratedHostBox, GeneratedHostBoxRequest, GeneratedHostBoxStyle,
-    GeneratedLayoutCapture, GeneratedLinebreakRequest, GeneratedNodeHandle, GeneratedNodeKind,
-    GeneratedNodeSnapshot, GeneratedNodeSourceSpan, GeneratedPlatform, GeneratedPlatformAdapter,
+    bake_packaged_format, generated_node_to_fragment, BakedGeneratedFormat,
+    EmptyGeneratedFontPlatform, EmptyGeneratedPlatform, GeneratedClock, GeneratedFontHandle,
+    GeneratedFontMetrics, GeneratedFontPlatform, GeneratedFontSystemAdapter, GeneratedFormatCache,
+    GeneratedHostBox, GeneratedHostBoxRequest, GeneratedHostBoxStyle, GeneratedLayoutCapture,
+    GeneratedLinebreakRequest, GeneratedNodeHandle, GeneratedNodeKind, GeneratedNodeSnapshot,
+    GeneratedNodeSourceSpan, GeneratedPlatform, GeneratedPlatformAdapter,
     GeneratedResourceProvider, GeneratedResourceRequestRecord, GeneratedSourceSpan,
 };
 pub use mathtex_font as font;
@@ -55,8 +56,6 @@ pub use profile::{
 };
 #[cfg(feature = "std")]
 pub use resource::FileSystemResourceProvider;
-#[cfg(feature = "std")]
-pub use texmf::TexmfResources;
 pub use resource::{
     InMemoryResourceProvider, OverlayResourceProvider, ResolverResourceProvider, Resource,
     ResourceBundle, ResourceError, ResourceKind, ResourceProvider,
@@ -67,3 +66,5 @@ pub use session::{
     BuildError, Engine, EngineBuilder, EngineError, EngineSession, FormatPreloadError,
     FragmentInput,
 };
+#[cfg(feature = "std")]
+pub use texmf::TexmfResources;
