@@ -12,8 +12,6 @@ path = "src/main.rs"
 [dependencies]
 mathtex-engine = { path = "../mathtex-engine" }
 mathtex-svg = { path = "../mathtex-svg" }
-mathtex-render = { path = "../mathtex-render" }
-mathtex-font = { path = "../mathtex-font" }
 mathtex-ir = { path = "../mathtex-ir" }
 
 [lints]

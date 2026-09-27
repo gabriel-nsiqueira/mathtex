@@ -1,23 +1,19 @@
-use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
-use core::cell::RefCell;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
-use mathtex_font::{
-    FontData, FontError, FontLoader, FontQuery, FontSystem, ShapeRequest, ShapedText,
-};
-use mathtex_ir::FontId;
+use mathtex_font::{FontData, FontError, FontKey, FontLoader, FontSpec};
 
-use crate::resource::{ResourceError, ResourceProvider};
+use crate::resource::{ResourceError, ResourceKind, ResourceProvider};
 
-/// Loads font bytes through a [`ResourceProvider`], shaping is unsupported.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResourceFontSystem<R> {
+/// Loads font files through a [`ResourceProvider`], one key per file in load order.
+#[derive(Debug)]
+pub struct ResourceFontLoader<R> {
     resources: R,
     loaded_fonts: RefCell<BTreeMap<String, FontData>>,
 }
 
-impl<R> ResourceFontSystem<R> {
-    /// Creates a font system backed by the given resource provider.
+impl<R> ResourceFontLoader<R> {
+    /// Creates a loader backed by the given resource provider.
     #[must_use]
     pub fn new(resources: R) -> Self {
         Self {
@@ -32,174 +28,90 @@ impl<R> ResourceFontSystem<R> {
         &self.resources
     }
 
-    /// Unwraps and returns the underlying resource provider.
-    #[must_use]
-    pub fn into_resources(self) -> R {
-        self.resources
-    }
-
-    /// Number of font resources cached by resolver facing name.
+    /// Number of font files loaded so far.
     #[must_use]
     pub fn cached_font_count(&self) -> usize {
         self.loaded_fonts.borrow().len()
     }
-}
 
-impl<R> FontSystem for ResourceFontSystem<R>
-where
-    R: ResourceProvider,
-{
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        FontLoader::load_font(self, query)
-    }
-
-    fn shape_text(&self, _request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        Err(FontError::ShapingUnsupported {
-            message: "resource font system loads bytes but does not shape text".to_string(),
-        })
-    }
-}
-
-impl<R> FontLoader for ResourceFontSystem<R>
-where
-    R: ResourceProvider,
-{
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        if let Some(font) = self
-            .loaded_fonts
-            .borrow()
-            .get(query.family.as_str())
-            .cloned()
-        {
-            return Ok(font);
-        }
-
-        let resource = self
-            .resources
-            .read_font(query.family.as_str())
-            .map_err(|error| resource_error_to_font_error(query, error))?;
-
-        let font = FontData::new(
-            font_id_for_name(&resource.canonical_name),
-            resource.canonical_name,
-            resource.bytes,
-        );
+    /// Returns the loaded font with the given key, so hosts can draw what the engine laid out.
+    #[must_use]
+    pub fn font(&self, key: FontKey) -> Option<FontData> {
         self.loaded_fonts
-            .borrow_mut()
-            .insert(query.family.clone(), font.clone());
-        Ok(font)
+            .borrow()
+            .values()
+            .find(|font| font.key == key)
+            .cloned()
     }
 }
 
-fn resource_error_to_font_error(query: &FontQuery, error: ResourceError) -> FontError {
-    match error {
-        ResourceError::NotFound { .. } => FontError::NotFound {
-            family: query.family.clone(),
-        },
-        ResourceError::Invalid { message, .. } | ResourceError::Denied { message, .. } => {
-            FontError::Invalid {
-                family: query.family.clone(),
-                message,
+impl<R> FontLoader for ResourceFontLoader<R>
+where
+    R: ResourceProvider,
+{
+    fn load(&self, spec: &FontSpec) -> Result<FontData, FontError> {
+        let mut last_error = None;
+        for name in spec.file_candidates() {
+            if let Some(font) = self.loaded_fonts.borrow().get(&name) {
+                return Ok(font.clone());
+            }
+            match self.resources.read(&name, ResourceKind::Font) {
+                Ok(resource) => {
+                    let mut fonts = self.loaded_fonts.borrow_mut();
+                    let key = FontKey(fonts.len() as u64 + 1);
+                    let font = FontData::new(key, resource.bytes);
+                    fonts.insert(name, font.clone());
+                    return Ok(font);
+                }
+                Err(error) => last_error = Some(error),
             }
         }
+        Err(match last_error {
+            Some(ResourceError::NotFound { .. }) | None => FontError::NotFound {
+                name: spec.name().into(),
+            },
+            Some(error) => FontError::Invalid {
+                name: spec.name().into(),
+                message: error.to_string(),
+            },
+        })
     }
-}
-
-fn font_id_for_name(name: &str) -> FontId {
-    let mut hash = 2_166_136_261u32;
-    for byte in name.as_bytes() {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    FontId(hash)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{InMemoryResourceProvider, ResourceKind};
+    use crate::InMemoryResourceProvider;
     use mathtex_ir::Length;
 
     #[test]
-    fn resource_font_system_loads_fonts_through_resource_provider() {
-        let resources = InMemoryResourceProvider::new().with_resource(
-            "Latin Modern Math.otf",
-            ResourceKind::Font,
-            b"font-bytes",
-        );
-        let fonts = ResourceFontSystem::new(resources);
+    fn resource_font_loader_caches_files_and_resolves_extensionless_names() {
+        let resources = InMemoryResourceProvider::new()
+            .with_resource("latinmodern-math.otf", ResourceKind::Font, b"math")
+            .with_resource("lmroman10-regular.otf", ResourceKind::Font, b"text");
+        let fonts = ResourceFontLoader::new(resources);
+        let spec = |name: &str| FontSpec::parse(name, Length(10 * 65_536));
 
-        let font = FontSystem::load_font(
-            &fonts,
-            &FontQuery {
-                family: "Latin Modern Math.otf".to_string(),
-                size: Length::from_scaled_points(655_360),
-                math: true,
-            },
-        )
-        .expect("font should resolve through resource provider");
-
-        assert_eq!(font.canonical_name, "Latin Modern Math.otf");
-        assert_eq!(&**font.bytes().expect("library owned bytes"), b"font-bytes");
-        assert_eq!(font.id, font_id_for_name("Latin Modern Math.otf"));
-        assert_eq!(fonts.cached_font_count(), 1);
-
-        let cached = FontSystem::load_font(
-            &fonts,
-            &FontQuery {
-                family: "Latin Modern Math.otf".to_string(),
-                size: Length::from_scaled_points(327_680),
-                math: true,
-            },
-        )
-        .expect("cached font should resolve without another cache entry");
-
-        assert_eq!(cached, font);
-        assert_eq!(fonts.cached_font_count(), 1);
-    }
-
-    #[test]
-    fn resource_font_system_reports_missing_font_as_font_error() {
-        let fonts = ResourceFontSystem::new(InMemoryResourceProvider::new());
-
-        let error = FontSystem::load_font(
-            &fonts,
-            &FontQuery {
-                family: "missing.otf".to_string(),
-                size: Length::ZERO,
-                math: false,
-            },
-        )
-        .expect_err("missing resource should be a font error");
+        let math = fonts
+            .load(&spec("[latinmodern-math.otf]:script=math"))
+            .expect("file spec");
+        assert_eq!(&**math.bytes().expect("owned bytes"), b"math");
+        let again = fonts
+            .load(&spec("[latinmodern-math.otf]:script=math;+ssty=0"))
+            .expect("cached file");
+        assert_eq!(again, math);
+        let text = fonts
+            .load(&spec("lmroman10-regular:mapping=tex-text"))
+            .expect("extensionless name");
+        assert_ne!(text.key, math.key);
+        assert_eq!(fonts.cached_font_count(), 2);
+        assert_eq!(fonts.font(text.key), Some(text));
 
         assert_eq!(
-            error,
-            FontError::NotFound {
-                family: "missing.otf".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn resource_font_system_keeps_shaping_explicitly_separate() {
-        let fonts = ResourceFontSystem::new(InMemoryResourceProvider::new());
-
-        let error = fonts
-            .shape_text(&ShapeRequest {
-                font: FontId(0),
-                text: "x",
-                direction: mathtex_ir::Direction::LeftToRight,
-                source: None,
-                script: None,
-                features: Vec::new(),
+            fonts.load(&spec("[missing.otf]")),
+            Err(FontError::NotFound {
+                name: "missing.otf".into()
             })
-            .expect_err("resource adapter should not shape text");
-
-        match error {
-            FontError::ShapingUnsupported { message } => {
-                assert!(message.contains("does not shape text"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        );
     }
 }

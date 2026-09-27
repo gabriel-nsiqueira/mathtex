@@ -1,110 +1,50 @@
-//! Source tracking tests for provenance-backed visible mark spans.
+//! Source tracking of typeset fragments: every visible mark maps back to the caller's input.
 
-use mathtex_engine::generated::generated_node_to_fragment;
-use mathtex_engine::{
-    portable_engine::EngineProfile, GeneratedFormatCache, GeneratedResourceProvider,
-    InMemoryResourceProvider, ResourceKind,
-};
-use mathtex_ir::{Fragment, FragmentMetadata, LayoutNodeKind, NodeId, SourceRange, SourceRole};
+mod support;
 
-const CMR10: &[u8] = include_bytes!("../../../vendor/texlive-source/texk/web2c/tests/cmr10.tfm");
-const CMMI10: &[u8] =
-    include_bytes!("../../../vendor/texlive-source/texk/web2c/tests/generated-tfm/cmmi10.tfm");
-const CMSY10: &[u8] =
-    include_bytes!("../../../vendor/texlive-source/texk/web2c/tests/generated-tfm/cmsy10.tfm");
-const CMEX10: &[u8] =
-    include_bytes!("../../../vendor/texlive-source/texk/web2c/tests/generated-tfm/cmex10.tfm");
+use mathtex_engine::{HostBoxes, MathMode, NoHostBoxes, Options, FRAGMENT_SOURCE};
+use mathtex_ir::{Fragment, LayoutNodeKind, Length, NodeId, SourceRange, SourceRole};
+use support::{cm_fonts, cm_format, typesetter, TokenWideBoxes};
 
-/// Plain TeX preamble prepended to every test program.
-const SETUP: &str = concat!(
-    r"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \catcode`\^=7 \catcode`\_=8 ",
-    r"\font\tenrm=cmr10 \font\teni=cmmi10 \font\tensy=cmsy10 \font\tenex=cmex10 ",
-    r"\textfont0=\tenrm \scriptfont0=\tenrm \scriptscriptfont0=\tenrm ",
-    r"\textfont1=\teni \scriptfont1=\teni \scriptscriptfont1=\teni ",
-    r"\textfont2=\tensy \scriptfont2=\tensy \scriptscriptfont2=\tensy ",
-    r"\textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex ",
-    r"\def\frac#1#2{{#1\over#2}}",
-);
-
-fn fonts() -> Vec<(&'static str, &'static [u8])> {
-    vec![
-        ("cmr10", CMR10),
-        ("cmmi10", CMMI10),
-        ("cmsy10", CMSY10),
-        ("cmex10", CMEX10),
-    ]
+/// Typesets inline math over the Computer Modern fixture format, `None` when the fixtures are missing.
+fn render_with(tex: &str, boxes: &dyn HostBoxes) -> Option<Fragment> {
+    let (fonts, format) = (cm_fonts()?, cm_format()?);
+    let mut typesetter = typesetter(fonts, format, Options::default());
+    let result = typesetter
+        .typeset(tex, MathMode::Inline, boxes)
+        .unwrap_or_else(|error| panic!("{tex:?} typesets: {error}"));
+    Some(result.fragment)
 }
 
-/// Render a complete TeX program, optionally disabling source tracking.
-fn render_program(program: &str, tracking: bool) -> Fragment {
-    let mut resources = InMemoryResourceProvider::new();
-    for (name, bytes) in fonts() {
-        resources = resources.with_resource(name, ResourceKind::Font, bytes.to_vec());
-    }
-    let format = GeneratedFormatCache::initialized(EngineProfile::tex());
-    let mut engine = format.instantiate(
-        EngineProfile::tex(),
-        GeneratedResourceProvider::new(resources),
-    );
-
-    engine.set_source_tracking(tracking);
-    engine.begin_fragment_capture();
-    assert!(
-        engine.begin_primary_input("input", program.as_bytes().to_vec()),
-        "engine refused primary input"
-    );
-    assert!(engine.run_main_control(), "run_main_control failed");
-    engine.end_fragment_capture();
-
-    let transcript = String::from_utf8_lossy(engine.transcript_bytes()).into_owned();
-    assert!(
-        !transcript.contains('!'),
-        "engine reported a TeX error:\n{transcript}"
-    );
-
-    let root = engine
-        .captured_fragment_root()
-        .expect("engine captured no fragment root");
-    generated_node_to_fragment(
-        &engine,
-        root,
-        FragmentMetadata {
-            engine_profile: "tex".into(),
-            format_id: "source-tracking".into(),
-            fragment_kind: Default::default(),
-        },
-    )
-    .expect("captured root failed to convert to IR")
-}
-
-fn math_program(body: &str) -> String {
-    format!("{SETUP}\\hbox{{${body}$}}\\end")
+fn render(tex: &str) -> Option<Fragment> {
+    render_with(tex, &NoHostBoxes)
 }
 
 fn is_visible(kind: &LayoutNodeKind) -> bool {
-    matches!(
-        kind,
-        LayoutNodeKind::GlyphRun(_) | LayoutNodeKind::Rule(_) | LayoutNodeKind::Drawing(_)
-    )
+    matches!(kind, LayoutNodeKind::GlyphRun(_) | LayoutNodeKind::Rule)
 }
 
-/// Slice fed by a source range, asserts the source name is "input".
-fn slice<'a>(fragment: &Fragment, fed: &'a str, range: SourceRange) -> &'a str {
+/// The slice of `tex` a range covers, asserting it names the fragment and stays inside it.
+fn slice<'a>(fragment: &Fragment, tex: &'a str, range: SourceRange) -> &'a str {
     let source = fragment
         .source_map
         .source(range.source)
         .expect("source id should resolve");
-    assert_eq!(source.name, "input", "span must point at the user fragment");
+    assert_eq!(
+        source.name, FRAGMENT_SOURCE,
+        "span must point at the fragment"
+    );
     let (s, e) = (range.span.start as usize, range.span.end as usize);
     assert!(
-        s <= e && e <= fed.len(),
-        "span [{s},{e}) out of bounds for fed len {}",
-        fed.len()
+        s <= e && e <= tex.len(),
+        "span [{s},{e}) out of bounds for len {}",
+        tex.len()
     );
-    &fed[s..e]
+    &tex[s..e]
 }
 
-fn visible_slices<'a>(fragment: &'a Fragment, fed: &'a str) -> Vec<(&'a LayoutNodeKind, &'a str)> {
+/// Kind and primary slice of every visible node, each must have a primary span.
+fn visible_slices<'a>(fragment: &'a Fragment, tex: &'a str) -> Vec<(&'a LayoutNodeKind, &'a str)> {
     fragment
         .nodes
         .iter()
@@ -113,75 +53,101 @@ fn visible_slices<'a>(fragment: &'a Fragment, fed: &'a str) -> Vec<(&'a LayoutNo
             let range = fragment
                 .primary_source_for_node(n.id)
                 .unwrap_or_else(|| panic!("visible node {:?} has no primary source", n.id));
-            (&n.kind, slice(fragment, fed, range))
+            (&n.kind, slice(fragment, tex, range))
         })
         .collect()
 }
 
-#[test]
-fn substring_fidelity_single_math_letter() {
-    let fed = math_program("x");
-    let fragment = render_program(&fed, true);
-
-    let visible = visible_slices(&fragment, &fed);
-    assert!(!visible.is_empty(), "no visible nodes for $x$");
-    let glyphs: Vec<&str> = visible
+fn glyphs<'a>(visible: &[(&LayoutNodeKind, &'a str)]) -> Vec<&'a str> {
+    visible
         .iter()
         .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
         .map(|(_, s)| *s)
-        .collect();
-    assert_eq!(glyphs, vec!["x"], "the x glyph must slice to \"x\"");
+        .collect()
+}
+
+fn rules<'a>(visible: &[(&LayoutNodeKind, &'a str)]) -> Vec<&'a str> {
+    visible
+        .iter()
+        .filter(|(k, _)| matches!(k, LayoutNodeKind::Rule))
+        .map(|(_, s)| *s)
+        .collect()
+}
+
+/// Glyph slices of `tex`, `None` when TeX Live is missing.
+fn glyph_slices(tex: &str) -> Option<Vec<String>> {
+    let fragment = render(tex)?;
+    Some(
+        glyphs(&visible_slices(&fragment, tex))
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
+#[test]
+fn substring_fidelity_single_math_letter() {
+    let Some(g) = glyph_slices("x") else {
+        return;
+    };
+    assert_eq!(g, ["x"], "the x glyph must slice to \"x\"");
 }
 
 fn entries_for<'a>(
     fragment: &'a Fragment,
-    fed: &'a str,
+    tex: &'a str,
     node: NodeId,
 ) -> Vec<(SourceRole, &'a str)> {
     fragment
-        .source_entries_for_node(node)
-        .map(|entry| (entry.role, slice(fragment, fed, entry.range)))
+        .source_origins_for_node(node)
+        .map(|origin| {
+            let range = SourceRange {
+                source: origin.source.id,
+                span: origin.span,
+            };
+            (origin.role, slice(fragment, tex, range))
+        })
         .collect()
 }
 
-/// Returns (role, slice) entries for the first glyph whose primary span matches glyph.
-fn glyph_entries(body: &str, glyph: &str) -> Vec<(SourceRole, String)> {
-    let fed = math_program(body);
-    let fragment = render_program(&fed, true);
-    for node in fragment.nodes.iter().filter(|n| is_visible(&n.kind)) {
+/// (role, slice) entries of the first glyph whose primary span is `glyph`.
+fn glyph_entries(tex: &str, glyph: &str) -> Option<Vec<(SourceRole, String)>> {
+    let fragment = render(tex)?;
+    for node in &fragment.nodes {
         if !matches!(node.kind, LayoutNodeKind::GlyphRun(_)) {
             continue;
         }
         if let Some(range) = fragment.primary_source_for_node(node.id) {
-            if slice(&fragment, &fed, range) == glyph {
-                return entries_for(&fragment, &fed, node.id)
-                    .into_iter()
-                    .map(|(r, s)| (r, s.to_string()))
-                    .collect();
+            if slice(&fragment, tex, range) == glyph {
+                return Some(
+                    entries_for(&fragment, tex, node.id)
+                        .into_iter()
+                        .map(|(r, s)| (r, s.to_string()))
+                        .collect(),
+                );
             }
         }
     }
-    panic!("no glyph slicing to {glyph:?} in {body:?}");
+    panic!("no glyph slicing to {glyph:?} in {tex:?}");
 }
 
 #[test]
 fn mathbin_leaf_primary_exact() {
-    let fed = math_program(r"\mathbin{+}");
-    let fragment = render_program(&fed, true);
-    let glyphs: Vec<&str> = visible_slices(&fragment, &fed)
-        .into_iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| s)
-        .collect();
+    let Some(g) = glyph_slices(r"\mathbin{+}") else {
+        return;
+    };
     assert!(
-        glyphs.contains(&"+"),
-        "the + glyph of \\mathbin{{+}} must slice to exactly \"+\" (its own leaf), got {glyphs:?}"
+        g.contains(&"+".to_string()),
+        "the + glyph must slice to \"+\", got {g:?}"
     );
 }
 
 #[test]
 fn mathbin_enclosing_construct_entry() {
-    let entries = glyph_entries(r"\mathbin{+}", "+");
+    let Some(entries) = glyph_entries(r"\mathbin{+}", "+") else {
+        return;
+    };
     assert_eq!(
         entries.first(),
         Some(&(SourceRole::Primary, "+".to_string()))
@@ -196,8 +162,10 @@ fn mathbin_enclosing_construct_entry() {
 
 #[test]
 fn fraction_argument_enclosing_construct_entry() {
-    for (glyph, _which) in [("a", "num"), ("b", "den")] {
-        let entries = glyph_entries(r"\frac{a}{b}", glyph);
+    for glyph in ["a", "b"] {
+        let Some(entries) = glyph_entries(r"\frac{a}{b}", glyph) else {
+            return;
+        };
         assert_eq!(
             entries.first(),
             Some(&(SourceRole::Primary, glyph.to_string())),
@@ -214,31 +182,25 @@ fn fraction_argument_enclosing_construct_entry() {
 
 #[test]
 fn enclosing_entries_contain_primary_and_nest_outward() {
-    for body in [r"\mathbin{+}", r"\frac{a}{b}", r"x^2", r"\frac{x+y}{z}"] {
-        let fed = math_program(body);
-        let fragment = render_program(&fed, true);
+    for tex in [r"\mathbin{+}", r"\frac{a}{b}", r"x^2", r"\frac{x+y}{z}"] {
+        let Some(fragment) = render(tex) else {
+            return;
+        };
         for node in fragment.nodes.iter().filter(|n| is_visible(&n.kind)) {
             let Some(primary) = fragment.primary_source_for_node(node.id) else {
                 continue;
             };
             let (ps, pe) = (primary.span.start, primary.span.end);
-            let mut prev: Option<(u32, u32)> = Some((ps, pe));
+            let mut inner = (ps, pe);
             for entry in fragment.source_entries_for_node(node.id) {
-                if entry.role != SourceRole::EnclosingConstruct {
-                    continue;
-                }
                 let (es, ee) = (entry.range.span.start, entry.range.span.end);
                 assert!(
-                    es <= ps && ee >= pe,
-                    "{body:?}: enclosing [{es},{ee}) must contain primary [{ps},{pe})"
+                    es <= inner.0 && ee >= inner.1,
+                    "{tex:?}: enclosing [{es},{ee}) must contain inner [{},{})",
+                    inner.0,
+                    inner.1
                 );
-                if let Some((vs, ve)) = prev {
-                    assert!(
-                        es <= vs && ee >= ve,
-                        "{body:?}: enclosing [{es},{ee}) must contain inner [{vs},{ve})"
-                    );
-                }
-                prev = Some((es, ee));
+                inner = (es, ee);
             }
         }
     }
@@ -246,55 +208,31 @@ fn enclosing_entries_contain_primary_and_nest_outward() {
 
 #[test]
 fn scan_loss_char_primitive() {
-    let fed = math_program(r"\char98");
-    let fragment = render_program(&fed, true);
-
-    let visible = visible_slices(&fragment, &fed);
-    let glyphs: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| *s)
-        .collect();
-    assert!(!glyphs.is_empty(), "no glyph for \\char98");
-    for g in &glyphs {
-        assert_ne!(*g, "98", "glyph mapped to the digits (scan loss)");
+    let Some(g) = glyph_slices(r"\char98") else {
+        return;
+    };
+    assert!(!g.is_empty(), "no glyph for \\char98");
+    for glyph in &g {
         assert!(
-            g.starts_with("\\char"),
-            "glyph span {g:?} should cover the \\char construct"
+            glyph.starts_with("\\char"),
+            "glyph span {glyph:?} should cover \\char98"
         );
     }
 }
 
 #[test]
 fn containment_fraction() {
-    let body = r"\frac{a}{b}";
-    let fed = math_program(body);
-    let fragment = render_program(&fed, true);
-
-    let visible = visible_slices(&fragment, &fed);
-    let glyphs: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| *s)
-        .collect();
-    let rules: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::Rule(_)))
-        .map(|(_, s)| *s)
-        .collect();
-
+    let tex = r"\frac{a}{b}";
+    let Some(fragment) = render(tex) else {
+        return;
+    };
+    let visible = visible_slices(&fragment, tex);
+    let (g, r) = (glyphs(&visible), rules(&visible));
+    assert!(g.contains(&"a") && g.contains(&"b"), "leaves; got {g:?}");
+    // TeX generates the fraction bar as a rule spanning the whole \frac invocation.
     assert!(
-        glyphs.contains(&"a"),
-        "numerator glyph should slice to a; got {glyphs:?}"
-    );
-    assert!(
-        glyphs.contains(&"b"),
-        "denominator glyph should slice to b; got {glyphs:?}"
-    );
-    // TeX generates the fraction bar as a rule node spanning the whole \frac invocation.
-    assert!(
-        rules.iter().any(|r| *r == body),
-        "fraction rule should cover {body:?}; got rules {rules:?}"
+        r.contains(&tex),
+        "fraction rule should cover {tex:?}; got {r:?}"
     );
 }
 
@@ -302,144 +240,89 @@ const SQRT: &str = "\\def\\sqrt[#1]#2{{#1}\\radical\"270370{#2}}";
 
 #[test]
 fn radical_surd_and_vinculum_map_to_whole_construct() {
-    let body = format!("{SQRT}\\sqrt[3]{{x}}");
-    let fed = math_program(&body);
-    let fragment = render_program(&fed, true);
-    let visible = visible_slices(&fragment, &fed);
-
-    let glyphs: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| *s)
-        .collect();
-    let rules: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::Rule(_)))
-        .map(|(_, s)| *s)
-        .collect();
-
+    let tex = format!("{SQRT}\\sqrt[3]{{x}}");
+    let Some(fragment) = render(&tex) else {
+        return;
+    };
+    let visible = visible_slices(&fragment, &tex);
+    let (g, r) = (glyphs(&visible), rules(&visible));
+    assert!(g.contains(&r"\sqrt[3]{x}"), "surd glyph; got {g:?}");
+    assert!(!g.contains(&"[3]"), "a glyph mis-mapped to the degree [3]");
+    assert!(r.contains(&r"\sqrt[3]{x}"), "vinculum; got {r:?}");
     assert!(
-        glyphs.contains(&r"\sqrt[3]{x}"),
-        "surd glyph must slice to the whole \\sqrt[3]{{x}}; got glyphs {glyphs:?}"
-    );
-    for g in &glyphs {
-        assert_ne!(*g, "[3]", "a glyph mis-mapped to the degree [3]");
-    }
-    // The vinculum is a rule node, it must span the whole radical construct.
-    assert!(
-        rules.iter().any(|r| *r == r"\sqrt[3]{x}"),
-        "vinculum rule must cover \\sqrt[3]{{x}}; got rules {rules:?}"
-    );
-    assert!(
-        glyphs.contains(&"3"),
-        "degree must slice to 3; got {glyphs:?}"
-    );
-    assert!(
-        glyphs.contains(&"x"),
-        "radicand must slice to x; got {glyphs:?}"
+        g.contains(&"3") && g.contains(&"x"),
+        "degree and radicand; got {g:?}"
     );
 }
 
 #[test]
 fn nested_fraction_in_argument_keeps_own_extent() {
-    // \frac replayed from a token list must recover the \frac{q}{2} extent, not the enclosing call site.
-    let body = "\\def\\sqrtx#1{\\radical\"270370{#1}}\\sqrtx{\\frac{q}{2}}";
-    let fed = math_program(body);
-    let fragment = render_program(&fed, true);
-    let rules: Vec<&str> = visible_slices(&fragment, &fed)
-        .into_iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::Rule(_)))
-        .map(|(_, s)| s)
-        .collect();
-    assert!(
-        rules.iter().any(|r| *r == r"\frac{q}{2}"),
-        "nested \\frac bar must slice to \\frac{{q}}{{2}}; got rules {rules:?}"
-    );
+    // \frac replayed from a token list must recover the \frac{q}{2} extent, not the enclosing call.
+    let tex = "\\def\\sqrtx#1{\\radical\"270370{#1}}\\sqrtx{\\frac{q}{2}}";
+    let Some(fragment) = render(tex) else {
+        return;
+    };
+    let r = rules(&visible_slices(&fragment, tex));
+    assert!(r.contains(&r"\frac{q}{2}"), "nested \\frac bar; got {r:?}");
 }
 
 #[test]
 fn cardano_radical_coverage_and_extent() {
-    let body = format!(
+    let tex = format!(
         "{SQRT}x=\\sqrt[3]{{-\\frac{{q}}{{2}}+\\sqrt[2]{{\\frac{{q^2}}{{4}}+\\frac{{p^3}}{{27}}}}}}"
     );
-    let fed = math_program(&body);
-    let fragment = render_program(&fed, true);
-
-    let visible: Vec<_> = fragment
-        .nodes
-        .iter()
-        .filter(|n| is_visible(&n.kind))
-        .collect();
-    assert!(!visible.is_empty(), "no visible nodes for Cardano");
-    for node in &visible {
-        let range = fragment
-            .primary_source_for_node(node.id)
-            .unwrap_or_else(|| panic!("Cardano: visible node {:?} has None source", node.id));
-        let s = slice(&fragment, &fed, range);
-        assert!(!s.is_empty(), "Cardano: empty span slice");
-    }
-    let radical_marks: Vec<&str> = visible_slices(&fragment, &fed)
-        .into_iter()
-        .map(|(_, s)| s)
-        .filter(|s| s.contains("\\sqrt["))
-        .collect();
+    let Some(fragment) = render(&tex) else {
+        return;
+    };
+    let visible = visible_slices(&fragment, &tex);
     assert!(
-        radical_marks.len() >= 2,
-        "expected both radicals' marks to map to \\sqrt[..] extents; got {radical_marks:?}"
+        visible.iter().all(|(_, s)| !s.is_empty()),
+        "empty span slice"
     );
-    for m in &radical_marks {
+    let radicals = visible
+        .iter()
+        .map(|(_, s)| *s)
+        .filter(|s| s.contains("\\sqrt["))
+        .collect::<Vec<_>>();
+    assert!(
+        radicals.len() >= 2,
+        "both radicals' marks; got {radicals:?}"
+    );
+    for mark in &radicals {
         assert!(
-            m.starts_with("\\sqrt["),
-            "radical mark {m:?} must be a whole \\sqrt[..] construct, not a degree"
+            mark.starts_with("\\sqrt["),
+            "radical mark {mark:?} must be a whole construct"
         );
     }
 }
 
 #[test]
 fn macro_invocation_synthesized_bar() {
-    let body = r"\def\foo{\frac{1}{2}}\foo";
-    let fed = math_program(body);
-    let fragment = render_program(&fed, true);
-
-    let visible = visible_slices(&fragment, &fed);
-    let rules: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::Rule(_)))
-        .map(|(_, s)| *s)
-        .collect();
+    let tex = r"\def\foo{\frac{1}{2}}\foo";
+    let Some(fragment) = render(tex) else {
+        return;
+    };
+    let r = rules(&visible_slices(&fragment, tex));
     assert!(
-        rules.iter().any(|r| *r == r"\foo"),
-        "synthesized fraction bar should map to the \\foo invocation; got {rules:?}"
+        r.contains(&r"\foo"),
+        "the bar maps to the \\foo invocation; got {r:?}"
     );
 }
 
 #[test]
-fn multi_line_absolute_offsets() {
-    let body = "a\n+b";
-    let fed = math_program(body);
-    assert!(fed.contains('\n'), "fed must be multi-line");
-    let fragment = render_program(&fed, true);
-
-    let visible = visible_slices(&fragment, &fed);
-    let glyphs: Vec<&str> = visible
-        .iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| *s)
-        .collect();
-    // Spans are absolute byte offsets into the fed buffer, not offsets relative to a line.
+fn multi_line_offsets_index_the_whole_input() {
+    let Some(g) = glyph_slices("a\n+b") else {
+        return;
+    };
     assert!(
-        glyphs.contains(&"a"),
-        "line-1 glyph a missing; got {glyphs:?}"
-    );
-    assert!(
-        glyphs.contains(&"b"),
-        "line-2 glyph b missing; got {glyphs:?}"
+        g.contains(&"a".to_string()) && g.contains(&"b".to_string()),
+        "{g:?}"
     );
 }
 
 #[test]
 fn coverage_no_visible_node_is_none() {
-    for body in [
+    for tex in [
         r"x",
         r"x+y",
         r"\char98",
@@ -447,278 +330,81 @@ fn coverage_no_visible_node_is_none() {
         r"x^2",
         r"\def\foo{\frac{1}{2}}\foo",
     ] {
-        let fed = math_program(body);
-        let fragment = render_program(&fed, true);
-        let visible: Vec<_> = fragment
-            .nodes
-            .iter()
-            .filter(|n| is_visible(&n.kind))
-            .collect();
-        assert!(!visible.is_empty(), "no visible nodes for {body:?}");
-        for node in visible {
-            let range = fragment
-                .primary_source_for_node(node.id)
-                .unwrap_or_else(|| panic!("{body:?}: visible node {:?} has None source", node.id));
-            let s = slice(&fragment, &fed, range);
-            assert!(!s.is_empty(), "{body:?}: empty span slice");
-            assert!(
-                fed.contains(s),
-                "{body:?}: span slice {s:?} not a substring of fed"
-            );
+        let Some(fragment) = render(tex) else {
+            return;
+        };
+        let visible = visible_slices(&fragment, tex);
+        assert!(!visible.is_empty(), "no visible nodes for {tex:?}");
+        assert!(
+            visible.iter().all(|(_, s)| !s.is_empty()),
+            "{tex:?}: empty slice"
+        );
+    }
+}
+
+// Regression: clean_box stamped a noad script field with the base span, so x^2 mapped 2 to "x".
+#[test]
+fn scripts_map_to_their_own_source() {
+    for (tex, leaves) in [
+        ("x^2", &["x", "2"][..]),
+        ("x_2", &["x", "2"][..]),
+        ("x^2_3", &["x", "2", "3"][..]),
+        ("x^{y}", &["x", "y"][..]),
+        ("x_{y}", &["x", "y"][..]),
+        // Built by make_op and clean_box, limits must carry their own span, not the operator's.
+        (r"\mathop{S}\limits_{a}^{b}", &["S", "a", "b"][..]),
+    ] {
+        let Some(g) = glyph_slices(tex) else {
+            return;
+        };
+        for leaf in leaves {
+            assert!(g.contains(&leaf.to_string()), "{tex}: {leaf:?} in {g:?}");
         }
     }
 }
 
 #[test]
-fn tracking_does_not_change_layout() {
-    let fed = math_program(r"\frac{a}{b}");
-
-    let kinds = |f: &Fragment| -> Vec<std::mem::Discriminant<LayoutNodeKind>> {
-        f.nodes
-            .iter()
-            .map(|n| std::mem::discriminant(&n.kind))
-            .collect()
-    };
-    let bounds = |f: &Fragment| -> Vec<(i32, i32)> {
-        f.nodes
-            .iter()
-            .map(|n| (n.bounds.size.width.0, n.bounds.size.height.0))
-            .collect()
-    };
-
-    let on = render_program(&fed, true);
-    let off = render_program(&fed, false);
-
-    assert_eq!(kinds(&on), kinds(&off), "node kinds changed with tracking");
-    assert_eq!(
-        bounds(&on),
-        bounds(&off),
-        "node bounds changed with tracking"
-    );
-
-    assert!(
-        off.nodes.iter().all(|n| n.primary_source.is_none()),
-        "tracking OFF must leave primary_source None"
-    );
-    assert!(
-        off.source_map.entries.is_empty(),
-        "tracking OFF must not populate the source map"
-    );
-    assert!(
-        on.nodes.iter().any(|n| n.primary_source.is_some()),
-        "tracking ON must populate spans"
-    );
-}
-
-// Regression: clean_box stamped a noad script field with the base span (x^2 caused 2 to map to "x").
-fn glyph_slices(fed: &str, body: &str) -> Vec<String> {
-    let fragment = render_program(fed, true);
-    visible_slices(&fragment, fed)
-        .into_iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| s.to_string())
-        .filter(|s| !s.trim().is_empty())
-        .collect::<Vec<_>>()
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|_| !body.is_empty())
-        .collect()
-}
-
-#[test]
-fn superscript_glyph_maps_to_own_source() {
-    let fed = math_program("x^2");
-    let g = glyph_slices(&fed, "x^2");
-    assert!(
-        g.contains(&"x".to_string()),
-        "base x must map to \"x\"; got {g:?}"
-    );
-    assert!(
-        g.contains(&"2".to_string()),
-        "superscript 2 must map to \"2\" (its own source), not the base; got {g:?}"
-    );
-}
-
-#[test]
-fn subscript_single_glyph_maps_to_own_source() {
-    let fed = math_program("x_2");
-    let g = glyph_slices(&fed, "x_2");
-    assert!(g.contains(&"x".to_string()), "base x; got {g:?}");
-    assert!(
-        g.contains(&"2".to_string()),
-        "subscript 2 must map to \"2\"; got {g:?}"
-    );
-}
-
-#[test]
-fn both_scripts_map_to_own_source() {
-    let fed = math_program("x^2_3");
-    let g = glyph_slices(&fed, "x^2_3");
-    for c in ["x", "2", "3"] {
-        assert!(
-            g.contains(&c.to_string()),
-            "glyph {c:?} must map to its own source; got {g:?}"
-        );
-    }
-}
-
-#[test]
-fn braced_scripts_map_to_own_source() {
-    for (body, sup) in [("x^{y}", "y"), ("x_{y}", "y")] {
-        let fed = math_program(body);
-        let g = glyph_slices(&fed, body);
-        assert!(g.contains(&"x".to_string()), "{body}: base x; got {g:?}");
-        assert!(
-            g.contains(&sup.to_string()),
-            "{body}: braced single-char script must map to {sup:?}, not the base; got {g:?}"
-        );
-    }
-}
-
-#[test]
-fn big_operator_limits_map_to_own_source() {
-    // Built via make_op + clean_box, limit glyphs must carry their own span, not the operator span.
-    let fed = math_program(r"\mathop{S}\limits_{a}^{b}");
-    let g = glyph_slices(&fed, "limits");
-    for c in ["S", "a", "b"] {
-        assert!(
-            g.contains(&c.to_string()),
-            "limit/base glyph {c:?} must map to its own source; got {g:?}"
-        );
-    }
-}
-
-#[test]
 fn leading_skipped_blank_excluded_from_span() {
-    // After a control word, consumed skip_blanks space must not widen the token span.
-    let fed = math_program(r"\displaystyle x");
-    let fragment = render_program(&fed, true);
-    let glyphs: Vec<String> = visible_slices(&fragment, &fed)
-        .into_iter()
-        .filter(|(k, _)| matches!(k, LayoutNodeKind::GlyphRun(_)))
-        .map(|(_, s)| s.to_string())
-        .collect();
-    assert_eq!(
-        glyphs,
-        vec!["x".to_string()],
-        "x must map to exactly \"x\" with no absorbed leading blank; got {glyphs:?}"
-    );
+    // After a control word, the space skip_blanks consumed must not widen the next token's span.
+    let Some(g) = glyph_slices(r"\displaystyle x") else {
+        return;
+    };
+    assert_eq!(g, ["x"]);
 }
 
-/// Test platform serving a fixed 5pt x 10pt host box with one glyph for every token.
-struct FixedHostBoxPlatform;
-
-impl mathtex_engine::portable_engine::PortablePlatform for FixedHostBoxPlatform {
-    fn host_box(
-        &mut self,
-        _request: mathtex_engine::portable_engine::PortableHostBoxRequest,
-    ) -> Option<mathtex_engine::portable_engine::PortableHostBox> {
-        Some(mathtex_engine::portable_engine::PortableHostBox {
-            width: 5 * 65536,
-            height: 10 * 65536,
-            depth: 0,
-            runs: vec![mathtex_engine::portable_engine::PortableHostBoxRun {
-                font_name: "HostFont".into(),
-                font_size: 10 * 65536,
-                glyphs: vec![mathtex_engine::portable_engine::PortableHostBoxGlyph {
-                    glyph: 1,
-                    x: 0,
-                    y: 0,
-                    advance: 5 * 65536,
-                }],
-            }],
-            rules: vec![],
-        })
-    }
-}
-
-/// Render with the fixed host box platform attached; mirrors `render_program` otherwise.
-fn render_host_box_program(program: &str) -> Fragment {
-    let mut resources = InMemoryResourceProvider::new();
-    for (name, bytes) in fonts() {
-        resources = resources.with_resource(name, ResourceKind::Font, bytes.to_vec());
-    }
-    let format = GeneratedFormatCache::initialized(EngineProfile::tex());
-    let mut engine = format
-        .instantiate(
-            EngineProfile::tex(),
-            GeneratedResourceProvider::new(resources),
-        )
-        .with_platform(FixedHostBoxPlatform);
-
-    engine.set_source_tracking(true);
-    engine.begin_fragment_capture();
-    assert!(
-        engine.begin_primary_input("input", program.as_bytes().to_vec()),
-        "engine refused primary input"
-    );
-    assert!(engine.run_main_control(), "run_main_control failed");
-    engine.end_fragment_capture();
-
-    let root = engine
-        .captured_fragment_root()
-        .expect("engine captured no fragment root");
-    generated_node_to_fragment(
-        &engine,
-        root,
-        FragmentMetadata {
-            engine_profile: "tex".into(),
-            format_id: "source-tracking".into(),
-            fragment_kind: Default::default(),
-        },
+/// Primary slices of every box as wide as the 5pt host box.
+fn host_box_slices(tex: &str) -> Option<Vec<String>> {
+    let boxes = TokenWideBoxes::default();
+    let fragment = render_with(tex, &boxes)?;
+    let width = Length::from_scaled_points(5 * 65_536);
+    Some(
+        fragment
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.kind, LayoutNodeKind::Box(_)) && node.width == width)
+            .map(|node| {
+                let range = fragment
+                    .primary_source_for_node(node.id)
+                    .unwrap_or_else(|| panic!("host box node {:?} has no primary source", node.id));
+                slice(&fragment, tex, range).to_string()
+            })
+            .collect(),
     )
-    .expect("captured root failed to convert to IR")
-}
-
-/// Primary span slices of every box node carrying the fixed host box width.
-fn host_box_atom_slices<'a>(fragment: &'a Fragment, fed: &'a str) -> Vec<&'a str> {
-    fragment
-        .nodes
-        .iter()
-        .filter(|node| {
-            matches!(
-                &node.kind,
-                LayoutNodeKind::Box(b) if b.metrics.width == mathtex_ir::Length::from_scaled_points(5 * 65536)
-            )
-        })
-        .map(|node| {
-            let range = fragment
-                .primary_source_for_node(node.id)
-                .unwrap_or_else(|| panic!("host box node {:?} has no primary source", node.id));
-            slice(fragment, fed, range)
-        })
-        .collect()
 }
 
 #[test]
 fn host_box_atom_spans_its_own_call_site() {
-    let fed =
-        format!("{SETUP}\\def\\hostbox#1{{\\Uhostbox #1\\relax}}\\hbox{{$a\\hostbox{{7}}b$}}\\end");
-    let fragment = render_host_box_program(&fed);
-    let slices = host_box_atom_slices(&fragment, &fed);
-    assert!(!slices.is_empty(), "host box atom must be present");
-    for text in &slices {
-        assert!(
-            text.starts_with("\\hostbox"),
-            "host box atom must map to its \\hostbox call site, got {text:?}"
-        );
-    }
-}
-
-#[test]
-fn host_box_atom_span_survives_script_field_copy() {
-    // The single atom script group copies the placeholder into the field word, the resolved box
-    // must still map to the \hostbox bytes rather than the enclosing script construct.
-    let fed = format!(
-        "{SETUP}\\def\\hostbox#1{{\\Uhostbox #1\\relax}}\\hbox{{$x^{{\\hostbox{{7}}}}$}}\\end"
-    );
-    let fragment = render_host_box_program(&fed);
-    let slices = host_box_atom_slices(&fragment, &fed);
-    assert!(!slices.is_empty(), "host box atom must be present");
-    for text in &slices {
-        assert!(
-            text.starts_with("\\hostbox"),
-            "script host box atom must map to its \\hostbox call site, got {text:?}"
-        );
+    // The script case copies the placeholder into the field word, the box must keep the \hostbox bytes.
+    for tex in [r"a\hostbox{5}b", r"x^{\hostbox{5}}"] {
+        let Some(slices) = host_box_slices(tex) else {
+            return;
+        };
+        assert!(!slices.is_empty(), "{tex}: host box atom must be present");
+        for text in &slices {
+            assert!(
+                text.starts_with("\\hostbox"),
+                "{tex}: host box maps to {text:?}"
+            );
+        }
     }
 }

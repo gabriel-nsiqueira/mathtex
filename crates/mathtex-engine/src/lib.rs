@@ -1,70 +1,29 @@
-//! Portable TeX engine library for formats, sessions, IR emission, and host platform traits.
-#![cfg_attr(not(feature = "std"), no_std)]
+//! Typesets LaTeX math with a XeTeX engine: bake a [`Format`] once, then [`Typesetter::typeset`] fragments.
 #![forbid(unsafe_code)]
 
-extern crate alloc;
+mod adapter;
+mod format;
+mod host_box;
+mod lower;
+mod resource;
+mod resource_font;
+mod shaper;
+mod texmf;
+mod typeset;
 
-/// IR emitter that translates TeX shipout calls to layout nodes.
-pub mod emit;
-/// Format image serialization, deserialization, and snapshot types.
-pub mod format;
-/// Code generated from the WEB source: engine tables, dispatch, and node types.
-pub mod generated;
-/// Host platform trait and bundled implementations for diagnostics, limits, and clocks.
-pub mod platform;
-/// Registry mapping primitive names to dispatch opcodes.
-pub mod primitive;
-/// Engine profile definitions: catcodes, primitives, semantics, and patches.
-pub mod profile;
-/// Resource provider trait and bundled implementations for fonts, packages, and inputs.
-pub mod resource;
-/// Font adapter that loads bytes through a resource provider.
-pub mod resource_font;
-/// Engine session construction, execution, and fragment rendering.
-pub mod session;
-#[cfg(feature = "std")]
-/// Native filesystem resource provider backed by a TeX live tree and `ls-R` index.
-pub mod texmf;
-
-pub use emit::{EmitNode, IrEmitter};
-pub use format::{
-    FormatImage, FormatInitError, FormatInitializer, FormatPackage, FormatResource,
-    FormatResourceKind, FormatSnapshot, FormatState, MacroDefinition, RegisterSnapshot,
-    SessionState,
-};
-pub use generated::{
-    bake_packaged_format, generated_node_to_fragment, BakedGeneratedFormat,
-    EmptyGeneratedFontPlatform, EmptyGeneratedPlatform, GeneratedClock, GeneratedFontHandle,
-    GeneratedFontMetrics, GeneratedFontPlatform, GeneratedFontSystemAdapter, GeneratedFormatCache,
-    GeneratedHostBox, GeneratedHostBoxRequest, GeneratedHostBoxStyle, GeneratedLayoutCapture,
-    GeneratedLinebreakRequest, GeneratedNodeHandle, GeneratedNodeKind, GeneratedNodeSnapshot,
-    GeneratedNodeSourceSpan, GeneratedPlatform, GeneratedPlatformAdapter,
-    GeneratedResourceProvider, GeneratedResourceRequestRecord, GeneratedSourceSpan,
+pub use format::{BuildError, Format, FormatBuilder, FormatError};
+pub use host_box::{
+    HostBox, HostBoxGlyph, HostBoxRequest, HostBoxRule, HostBoxRun, HostBoxes, MathStyle,
+    NoHostBoxes,
 };
 pub use mathtex_font as font;
-pub use mathtex_portable_engine_generated as portable_engine;
-pub use platform::{
-    CollectingDiagnosticSink, ConfigurablePlatform, Diagnostic, DiagnosticSeverity, DiagnosticSink,
-    HostBox, HostBoxGlyph, HostBoxRequest, HostBoxRule, HostBoxRun, HostBoxStyle, HostClock,
-    HostLimits, LimitError, LinebreakRequest, NoopDiagnosticSink, NoopPlatform, Platform,
-};
-pub use primitive::{PrimitiveEntry, PrimitiveRegistry, PrimitiveRegistryError};
-pub use profile::{
-    CatcodeDefaults, EngineKind, EnginePatch, EnginePatches, EngineProfile, EngineSemantics,
-    EtexProfile, ExtensionPolicy, FontSemantics, MathcodeDefaults, PrimitiveKind, PrimitiveOpcode,
-    PrimitiveSpec, ProfileId, RegisterDefaults, TexCore, TexProfile, XetexProfile,
-};
-#[cfg(feature = "std")]
-pub use resource::FileSystemResourceProvider;
 pub use resource::{
-    InMemoryResourceProvider, OverlayResourceProvider, ResolverResourceProvider, Resource,
-    ResourceBundle, ResourceError, ResourceKind, ResourceProvider,
-    ResourceRequest as ProviderResourceRequest, ResourceRequestSource,
+    FileSystemResourceProvider, InMemoryResourceProvider, Resource, ResourceError, ResourceKind,
+    ResourceProvider, ResourceRequest,
 };
-pub use resource_font::ResourceFontSystem;
-pub use session::{
-    BuildError, Engine, EngineBuilder, EngineError, EngineSession, FormatPreloadError,
-    FragmentInput,
+pub use resource_font::ResourceFontLoader;
+pub use texmf::{TexmfError, TexmfResources, TEXMF_ROOT_ENV};
+pub use typeset::{
+    Diagnostic, DiagnosticKind, MathMode, Options, Typeset, TypesetError, Typesetter,
+    FRAGMENT_SOURCE,
 };
-#[cfg(feature = "std")]
-pub use texmf::TexmfResources;

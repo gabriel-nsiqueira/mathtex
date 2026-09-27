@@ -34,7 +34,6 @@ pub(crate) const RESOURCE_SEARCH_RENAMES: &[(&str, &str)] = &[
     ("kpse_pdftex_config_format", "resource_format_config"),
     ("kpse_dvips_config_format", "resource_format_config"),
     ("kpathsea_instance", "ResourceSearchState"),
-    ("kpathsea", "ResourceSearchHandle"),
 ];
 
 /// State field renames keyed by the bare translated global name.
@@ -63,6 +62,10 @@ pub(crate) const HOST_SERVICE_CALL_RENAMES: &[(&str, &str)] = &[
     (
         "Self::host_get_cp_code(",
         "Self::get_character_protrusion(self as *mut PortableTexEngine<'_>, ",
+    ),
+    (
+        "Self::host_set_cp_code(",
+        "Self::set_character_protrusion(self as *mut PortableTexEngine<'_>, ",
     ),
     (
         "Self::host_get_native_glyph(",
@@ -178,6 +181,46 @@ pub(crate) const HOST_SERVICE_CALL_RENAMES: &[(&str, &str)] = &[
         "Self::host_uexit(",
         "Self::abort_engine(self as *mut PortableTexEngine<'_>, ",
     ),
+    (
+        "Self::host_getnativecharwd(",
+        "Self::native_char_width(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getnativecharht(",
+        "Self::native_char_height(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getnativechardp(",
+        "Self::native_char_depth(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getnativecharic(",
+        "Self::native_char_italic_correction(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getnativecharheightdepth(",
+        "Self::native_char_height_depth(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getnativecharsidebearings(",
+        "Self::native_char_side_bearings(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getglyphbounds(",
+        "Self::glyph_bound(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_getfontcharrange(",
+        "Self::font_char_range(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_get_native_italic_correction(",
+        "Self::native_word_italic_correction(self as *mut PortableTexEngine<'resources>, ",
+    ),
+    (
+        "Self::host_get_native_glyph_italic_correction(",
+        "Self::native_glyph_italic_correction(self as *mut PortableTexEngine<'resources>, ",
+    ),
 ];
 
 /// Translated functions resolved against host provided services.
@@ -185,6 +228,7 @@ pub(crate) const HOST_FUNCTIONS: &[&str] = &[
     "aatgetfontmetrics",
     "findnativefont",
     "get_cp_code",
+    "set_cp_code",
     "get_native_glyph",
     "get_native_mathex_param",
     "get_native_mathsy_param",
@@ -215,6 +259,16 @@ pub(crate) const HOST_FUNCTIONS: &[&str] = &[
     "otgetfontmetrics",
     "releasefontengine",
     "uexit",
+    "getnativecharwd",
+    "getnativecharht",
+    "getnativechardp",
+    "getnativecharic",
+    "getnativecharheightdepth",
+    "getnativecharsidebearings",
+    "getglyphbounds",
+    "getfontcharrange",
+    "get_native_italic_correction",
+    "get_native_glyph_italic_correction",
 ];
 
 pub(crate) const PORTABLE_BOUNDARY_CALLS: &[(&str, &str)] = &[
@@ -231,6 +285,7 @@ pub(crate) const PORTABLE_BOUNDARY_CALLS: &[(&str, &str)] = &[
     ("feof", "boundary_end_of_file"),
     ("fflush", "boundary_flush_file"),
     ("putc", "boundary_write_byte"),
+    ("putc_terminal", "boundary_write_terminal_byte"),
     ("close_file", "boundary_close_file"),
     ("close_file_or_pipe", "boundary_close_file"),
     ("getfilesize", "boundary_get_file_size"),
@@ -248,6 +303,7 @@ pub(crate) const RECEIVER_BOUNDARY_CALLS: &[&str] = &[
     "boundary_open_log_file",
     "boundary_jump_out",
     "boundary_write_byte",
+    "boundary_write_terminal_byte",
     "boundary_get_file_size",
 ];
 

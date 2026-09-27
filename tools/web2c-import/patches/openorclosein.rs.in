@@ -3,12 +3,13 @@
         (&mut *(self as *mut PortableTexEngine<'_>)).scanfourbitint();
         let n = self.state.curval as eightbits;
         let slot = n as usize;
-        if self.state.readopen[slot] as i32 != 2 as i32 {
+        if self.state.readopen[slot] != READ_CLOSED {
             Self::boundary_close_file(self.state.readfile[slot]);
             self.state.readfile[slot] = core::ptr::null_mut();
-            self.state.readopen[slot] = 2 as eightbits;
+            self.state.readopen[slot] = READ_CLOSED;
         }
         if c_0 as i32 != 0 {
+            Self::sandbox_reject(self as *mut PortableTexEngine<'_>, "\\openin is not allowed inside a math expression");
             (&mut *(self as *mut PortableTexEngine<'_>)).scanoptionalequals();
             (&mut *(self as *mut PortableTexEngine<'_>)).scanfilename();
             (&mut *(self as *mut PortableTexEngine<'_>)).zpackfilename(
@@ -23,7 +24,7 @@
                 FOPEN_RBIN_MODE.as_ptr(),
             ) != 0
             {
-                self.state.readopen[slot] = 1 as eightbits;
+                self.state.readopen[slot] = READ_JUST_OPEN;
             }
         }
     }

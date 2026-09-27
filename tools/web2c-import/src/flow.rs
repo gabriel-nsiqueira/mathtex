@@ -25,6 +25,65 @@ pub(crate) fn rewrite_fallible_function(block: &str, triggers: &FlowTriggers) ->
     indent_method(&rendered)
 }
 
+/// Names each call to an `EngineFlow` returning function in `block` that is not the direct operand of `?`.
+pub(crate) fn unwrapped_flow_calls(block: &str, triggers: &FlowTriggers) -> Vec<String> {
+    let wrapped = format!("impl __FlowWrap {{\n{block}\n}}\n");
+    let item_impl: ItemImpl = parse_str(&wrapped)
+        .unwrap_or_else(|error| panic!("flow: failed to parse wrapped function: {error}\n{block}"));
+    let method = single_method_ref(&item_impl);
+    let mut finder = UnwrappedCallFinder {
+        triggers,
+        in_try: false,
+        calls: Vec::new(),
+    };
+    syn::visit::Visit::visit_impl_item_fn(&mut finder, method);
+    let function = method.sig.ident.to_string();
+    finder
+        .calls
+        .into_iter()
+        .map(|callee| format!("{function} calls {callee}"))
+        .collect()
+}
+
+struct UnwrappedCallFinder<'a> {
+    triggers: &'a FlowTriggers,
+    /// Set while visiting the direct operand of a `?`.
+    in_try: bool,
+    calls: Vec<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for UnwrappedCallFinder<'_> {
+    fn visit_expr(&mut self, node: &'ast Expr) {
+        if let Expr::Try(try_expr) = node {
+            self.in_try = true;
+            self.visit_expr(&try_expr.expr);
+            return;
+        }
+        let wrapped = std::mem::replace(&mut self.in_try, false);
+        if !wrapped {
+            if let Some(callee) = callee_name(node) {
+                if self.triggers.classify(&callee).is_some() {
+                    self.calls.push(callee);
+                }
+            }
+        }
+        syn::visit::visit_expr(self, node);
+    }
+}
+
+fn callee_name(node: &Expr) -> Option<String> {
+    match node {
+        Expr::MethodCall(call) => Some(call.method.to_string()),
+        Expr::Call(call) => {
+            let Expr::Path(path) = call.func.as_ref() else {
+                return None;
+            };
+            Some(path.path.segments.last()?.ident.to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Rewrite each named bridge function in `source` to its `EngineFlow` form.
 pub(crate) fn rewrite_named_functions(
     mut source: String,
@@ -32,8 +91,9 @@ pub(crate) fn rewrite_named_functions(
     triggers: &FlowTriggers,
 ) -> String {
     for name in names {
-        let (start, end) = locate_function_block(&source, name)
-            .unwrap_or_else(|| panic!("flow: bridge function `{name}` not found in runtime source"));
+        let (start, end) = locate_function_block(&source, name).unwrap_or_else(|| {
+            panic!("flow: bridge function `{name}` not found in runtime source")
+        });
         let block = source[start..end].to_string();
         // `rewrite_fallible_function` emits with the extracted block's indentation.
         let rewritten = rewrite_fallible_function(block.trim(), triggers);
@@ -110,14 +170,34 @@ pub(crate) const PRELUDE_BRIDGE_FUNCTIONS: &[&str] = &[
     "zbuildopentypeassembly",
 ];
 
+/// Returns true when a patched body calls a prelude bridge that returns `EngineFlow`.
+pub(crate) fn calls_prelude_bridge(block: &str) -> bool {
+    let mut found = false;
+    crate::transform::scan_identifiers(block, |identifier, _previous, next| {
+        if next == Some('(')
+            && (PRELUDE_BRIDGE_FUNCTIONS.contains(&identifier)
+                || HAND_EDITED_BRIDGE_FUNCTIONS.contains(&identifier)
+                || identifier == "abort_engine")
+        {
+            found = true;
+        }
+    });
+    found
+}
+
 /// Bridge functions excluded from automatic rewrite but registered as fallible triggers.
 const HAND_EDITED_BRIDGE_FUNCTIONS: &[&str] = &[
     "intern_static_pool_string",
     "surface_error",
+    "fatal_pdf_error",
     "sandbox_reject",
     "sandbox_open_math",
     "sandbox_close_math",
     "sandbox_tick",
+    "sandbox_check_command",
+    "sandbox_check_write_stream",
+    "boundary_input_line",
+    "boundary_prune_page_top",
     "host_box_insert",
     "host_box_resolve_noad",
     "host_box_resolve_field",
@@ -146,24 +226,15 @@ pub(crate) fn build_trigger_set(
     .map(|name| (*name).to_string())
     .collect();
 
-    let mut fallible_set = BTreeSet::new();
-    for name in fallible {
-        match boundary_renames.iter().find(|(input, _)| input == name) {
-            // Only `boundary_build_page` and `boundary_jump_out` return `EngineFlow`.
-            Some((_, output)) => {
-                let output = (*output).to_string();
-                if output == "boundary_build_page" {
-                    fallible_set.insert(output);
-                }
-                // `boundary_jump_out` is in the diverging set.
-            }
-            None => {
-                if !diverging_names.contains(name) {
-                    fallible_set.insert(name.clone());
-                }
-            }
-        }
-    }
+    // Renamed boundaries return plain values, `boundary_jump_out` diverges and fallible ones register as bridges.
+    let fallible_set = fallible
+        .iter()
+        .filter(|name| {
+            !diverging_names.contains(*name)
+                && !boundary_renames.iter().any(|(input, _)| input == name)
+        })
+        .cloned()
+        .collect();
     FlowTriggers {
         fallible: fallible_set,
         diverging: diverging_names,
@@ -238,17 +309,7 @@ impl VisitMut for AbortRewriter<'_> {
 impl AbortRewriter<'_> {
     /// Classifies a call expression by matching the callee name.
     fn trigger_kind(&self, node: &Expr) -> Option<TriggerKind> {
-        let callee = match node {
-            Expr::MethodCall(call) => call.method.to_string(),
-            Expr::Call(call) => {
-                let Expr::Path(path) = call.func.as_ref() else {
-                    return None;
-                };
-                path.path.segments.last()?.ident.to_string()
-            }
-            _ => return None,
-        };
-        self.triggers.classify(&callee)
+        self.triggers.classify(&callee_name(node)?)
     }
 }
 
@@ -400,7 +461,10 @@ mod tests {
             out.contains("-> EngineFlow<core::convert::Infallible>"),
             "{out}"
         );
-        assert!(out.contains("match Self::boundary_jump_out(self)? {}"), "{out}");
+        assert!(
+            out.contains("match Self::boundary_jump_out(self)? {}"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -434,6 +498,24 @@ mod tests {
     }
 
     #[test]
+    fn unwrapped_trigger_calls_are_reported() {
+        let calls = unwrapped_flow_calls(
+            "pub(crate) unsafe fn f(&mut self) -> EngineFlow<()> {\n    self.error()?;\n    match self.zfatalerror(1)? {}\n    self.getavail();\n    self.harmless();\n    Ok(())\n}",
+            &triggers(),
+        );
+        assert_eq!(calls, ["f calls getavail"]);
+    }
+
+    #[test]
+    fn rewritten_function_has_no_unwrapped_calls() {
+        let out = rewrite_fallible_function(
+            "pub(crate) unsafe fn f(&mut self) -> i32 {\n    let x = self.getavail();\n    if self.error() == 0 { self.zfatalerror(1); }\n    return x;\n}",
+            &triggers(),
+        );
+        assert!(unwrapped_flow_calls(&out, &triggers()).is_empty(), "{out}");
+    }
+
+    #[test]
     fn build_trigger_set_drops_non_fatal_boundaries() {
         // Boundary routes split into fallible, diverging, and plain methods.
         let fallible = ["zshipout", "jumpout", "buildpage", "error"]
@@ -446,7 +528,7 @@ mod tests {
             ("buildpage", "boundary_build_page"),
         ][..];
         let triggers = build_trigger_set(&fallible, renames);
-        assert!(triggers.fallible.contains("boundary_build_page"));
+        assert!(!triggers.fallible.contains("boundary_build_page"));
         assert!(triggers.fallible.contains("error"));
         assert!(!triggers.fallible.contains("boundary_shipout"));
         assert!(triggers.diverging.contains("boundary_jump_out"));

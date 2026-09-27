@@ -93,6 +93,18 @@ check('one-shot render() free function still works', () => {
   const one = wasm.render(packaged, resolve, String.raw`a+b`);
   assert.ok((one.match(/<use/g) || []).length >= 3, 'one-shot render drew too few glyphs');
 });
+// Formats load on every little endian target, so a format baked by the native bake_format example works here.
+const nativeFormat = process.env.MATHTEX_NATIVE_FORMAT;
+if (nativeFormat) {
+  check('a natively baked format renders like the wasm baked one', () => {
+    const native = new wasm.Session(new Uint8Array(fs.readFileSync(nativeFormat)), resolve);
+    for (const tex of [CAUCHY, String.raw`\frac{a}{b}+\sqrt{x}`, String.raw`x+\text{for all}+y`]) {
+      assert.strictEqual(native.render(tex), session.render(tex), `renders of ${tex} differ`);
+    }
+  });
+} else {
+  console.log('  skip a natively baked format renders like the wasm baked one (set MATHTEX_NATIVE_FORMAT)');
+}
 check('Session rejects a foreign packaged buffer', () => {
   const ret = (() => {
     try {

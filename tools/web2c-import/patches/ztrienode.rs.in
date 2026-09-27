@@ -2,11 +2,7 @@
         let mut Result: triepointer = 0;
         let mut h: triepointer = 0;
         let mut q: triepointer = 0;
-        // `trie_node`'s hash: abs(c + 1009*o + 2718*l + 3142*r) mod trie_size.
-        // The multiplications overflow i32 for large pattern sets (e.g. 3142 * a
-        // ~1M trie pointer), in C / release Rust this wraps and the `mod` keeps it
-        // a valid hash. Use explicit wrapping ops so debug builds match release
-        // byte-for-byte instead of panicking on the overflow check.
+        // The `trie_node` hash overflows `i32` for large pattern sets, it wraps as in C and release builds.
         let key = (*self.state.triec.offset(p as isize) as triepointer)
             .wrapping_add(
                 (1009 as triepointer)

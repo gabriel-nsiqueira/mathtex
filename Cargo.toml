@@ -5,10 +5,10 @@ members = [
     "crates/mathtex-engine",
     "crates/mathtex-font",
     "crates/mathtex-ir",
-    "crates/mathtex-render",
     "crates/mathtex-svg",
     "crates/mathtex-wasm",
     "generated/portable-engine",
+    "tools/test-fixtures",
     "tools/web2c-import",
 ]
 resolver = "2"

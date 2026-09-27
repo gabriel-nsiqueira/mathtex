@@ -9,7 +9,7 @@
             let mut cursor = start;
             loop {
                 let c = *engine.state.strpool.offset(cursor as isize);
-                if c as i32 != 34 as i32 {
+                if c != u16::from(b'"') {
                     units.push(c);
                 }
                 let previous = cursor;

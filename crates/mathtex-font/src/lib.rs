@@ -1,221 +1,310 @@
-//! Font loading, shaping, metrics, and OpenType math access for mathtex.
-#![cfg_attr(not(feature = "std"), no_std)]
+//! XeTeX font spec parsing, the host font loader trait, and OpenType metrics and math access.
 #![forbid(unsafe_code)]
 
-extern crate alloc;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::{Arc, OnceLock};
 
-use core::cell::RefCell;
+pub use mathtex_ir::FontKey;
+use mathtex_ir::{GlyphId, GlyphOutline, Length, OutlineCommand};
 
-use alloc::collections::BTreeMap;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-
-use mathtex_ir::{
-    ByteSpan, Direction, FontId, GlyphId, GlyphOutline, Length, OutlineCommand, Point,
-    PositionedGlyph,
-};
-
-// Re exported so applications share one parser version and faces interoperate with FontData.
+// SharedFace and the face accessors name these crates' types, so hosts must use these exact versions.
 pub use rustybuzz;
 pub use ttf_parser;
 
-/// Font loading and shaping boundary used by engine profiles.
-pub trait FontSystem {
-    /// Load font data that matches the query.
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError>;
-
-    /// Shape text into positioned glyphs.
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError>;
-}
-
-/// Font loading half of a font system.
+/// Loads font faces for the engine, the only font trait a host implements.
 pub trait FontLoader {
-    /// Load font data that matches the query.
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError>;
-}
-
-/// Text shaping half of a font system, decoupled from any concrete shaper crate.
-pub trait TextShaper {
-    /// Shape text into positioned glyphs.
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError>;
-}
-
-impl<T> FontSystem for &T
-where
-    T: FontSystem,
-{
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        (*self).load_font(query)
-    }
-
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        (*self).shape_text(request)
-    }
+    /// Returns the face a spec names, with a key the host chooses to identify it in the IR.
+    fn load(&self, spec: &FontSpec) -> Result<FontData, FontError>;
 }
 
 impl<T> FontLoader for &T
 where
-    T: FontLoader,
+    T: FontLoader + ?Sized,
 {
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        (*self).load_font(query)
+    fn load(&self, spec: &FontSpec) -> Result<FontData, FontError> {
+        (**self).load(spec)
     }
 }
 
-impl<T> TextShaper for &T
-where
-    T: TextShaper,
-{
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        (*self).shape_text(request)
-    }
-}
-
-/// Font system assembled from independent loading and shaping services.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ComposedFontSystem<L, S> {
-    loader: L,
-    shaper: S,
-}
-
-impl<L, S> ComposedFontSystem<L, S> {
-    /// Create a font system from a loader and shaper.
-    #[must_use]
-    pub fn new(loader: L, shaper: S) -> Self {
-        Self { loader, shaper }
-    }
-
-    /// Borrow the font loader.
-    #[must_use]
-    pub fn loader(&self) -> &L {
-        &self.loader
-    }
-
-    /// Borrow the text shaper.
-    #[must_use]
-    pub fn shaper(&self) -> &S {
-        &self.shaper
-    }
-
-    /// Split this font system into its loader and shaper.
-    #[must_use]
-    pub fn into_parts(self) -> (L, S) {
-        (self.loader, self.shaper)
-    }
-}
-
-impl<L, S> FontSystem for ComposedFontSystem<L, S>
-where
-    L: FontLoader,
-    S: TextShaper,
-{
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        self.loader.load_font(query)
-    }
-
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        self.shaper.shape_text(request)
-    }
-}
-
-/// Font system backed by `ttf-parser` and `rustybuzz`, with font bytes cached by [`FontId`].
-#[derive(Debug)]
-pub struct RustybuzzFontSystem<L> {
-    loader: L,
-    loaded_fonts: RefCell<BTreeMap<u32, CachedFont>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CachedFont {
-    data: FontData,
+/// A parsed XeTeX font spec, the engine shapes with its name, script, language and features only.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FontSpec {
+    spec: String,
+    name: String,
+    file: bool,
+    face_index: u32,
+    variants: Vec<String>,
     size: Length,
+    script: Option<[u8; 4]>,
+    language: Option<String>,
+    features: Vec<ShapeFeature>,
+    options: Vec<(String, String)>,
+    vertical: bool,
+    unknown: Vec<String>,
 }
 
-impl<L> RustybuzzFontSystem<L> {
-    /// Create a Rustybuzz font system from a loader.
+impl FontSpec {
+    /// Parses a spec as XeTeX's `splitFontName` and `loadOTfont` read it, `size` is the loaded size.
     #[must_use]
-    pub fn new(loader: L) -> Self {
-        Self {
-            loader,
-            loaded_fonts: RefCell::new(BTreeMap::new()),
+    pub fn parse(spec: &str, size: Length) -> Self {
+        let (name, file, face_index, variant, features) = split_font_name(spec);
+        let mut parsed = Self {
+            spec: spec.to_string(),
+            name,
+            file,
+            face_index,
+            variants: variant
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect(),
+            size,
+            script: None,
+            language: None,
+            features: Vec::new(),
+            options: Vec::new(),
+            vertical: false,
+            unknown: Vec::new(),
+        };
+        for option in features.split([':', ';', ',']) {
+            parsed.read_option(option.trim_start_matches([' ', '\t']));
+        }
+        parsed
+    }
+
+    fn read_option(&mut self, option: &str) {
+        if option.is_empty() {
+            return;
+        }
+        if let Some((key, value)) = option.split_once('=') {
+            match key {
+                "script" => return self.script = Some(ot_tag(value)),
+                "language" => return self.language = Some(value.to_string()),
+                "mapping" | "extend" | "slant" | "embolden" | "letterspace" | "color"
+                | "shaper" => return self.options.push((key.to_string(), value.to_string())),
+                _ => {}
+            }
+        }
+        if let Some(rest) = option.strip_prefix('+') {
+            // XeTeX's read_tag_with_param bumps a nonnegative `+tag=n` so alternate 0 selects the first one.
+            let (tag, param) = rest
+                .split_once('=')
+                .map_or((rest, 0i64), |(tag, value)| (tag, leading_int(value)));
+            let value = if param >= 0 { param + 1 } else { param };
+            self.features.push(ShapeFeature {
+                tag: ot_tag(tag),
+                value: value as u32,
+            });
+        } else if let Some(tag) = option.strip_prefix('-') {
+            self.features.push(ShapeFeature {
+                tag: ot_tag(tag),
+                value: 0,
+            });
+        } else if let Some((tag, value)) = option.split_once('=') {
+            match value.trim().parse::<u32>() {
+                Ok(value) => self.features.push(ShapeFeature {
+                    tag: ot_tag(tag),
+                    value,
+                }),
+                Err(_) => self.unknown.push(option.to_string()),
+            }
+        } else if option.trim_end() == "vertical" {
+            self.vertical = true;
+        } else {
+            self.unknown.push(option.to_string());
         }
     }
 
-    /// Borrow the wrapped loader.
+    /// The spec exactly as TeX gave it.
     #[must_use]
-    pub fn loader(&self) -> &L {
-        &self.loader
+    pub fn as_str(&self) -> &str {
+        &self.spec
     }
 
-    /// Return the wrapped loader.
+    /// File name inside `[...]` without the face index, or the bare font name.
     #[must_use]
-    pub fn into_loader(self) -> L {
-        self.loader
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether the spec names a file with `[...]`, otherwise it is a XeTeX name lookup.
+    #[must_use]
+    pub fn is_file(&self) -> bool {
+        self.file
+    }
+
+    /// Face index of a `[file:N]` spec, 0 otherwise.
+    #[must_use]
+    pub fn face_index(&self) -> u32 {
+        self.face_index
+    }
+
+    /// Style and renderer suffixes after `/`, such as `B`, `I`, `OT` or `AAT`, which the engine ignores.
+    #[must_use]
+    pub fn variants(&self) -> &[String] {
+        &self.variants
+    }
+
+    /// Size the font is loaded at.
+    #[must_use]
+    pub fn size(&self) -> Length {
+        self.size
+    }
+
+    /// OpenType script tag from `script=`.
+    #[must_use]
+    pub fn script(&self) -> Option<[u8; 4]> {
+        self.script
+    }
+
+    /// Language from `language=`.
+    #[must_use]
+    pub fn language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    /// OpenType features from `+tag`, `-tag` and `tag=value`, in spec order.
+    #[must_use]
+    pub fn features(&self) -> &[ShapeFeature] {
+        &self.features
+    }
+
+    /// Value of an option the engine ignores, such as `mapping`, `color`, `embolden` or `letterspace`.
+    #[must_use]
+    pub fn option(&self, key: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Whether the spec asks for `vertical` layout, which the engine ignores.
+    #[must_use]
+    pub fn vertical(&self) -> bool {
+        self.vertical
+    }
+
+    /// Options XeTeX would warn about as unknown.
+    #[must_use]
+    pub fn unknown_options(&self) -> &[String] {
+        &self.unknown
+    }
+
+    /// The name, then with `.otf` and `.ttf` when extensionless, so bare TU default names resolve as files.
+    #[must_use]
+    pub fn file_candidates(&self) -> Vec<String> {
+        let mut candidates = vec![self.name.clone()];
+        let base = self.name.rsplit(['/', '\\']).next().unwrap_or(&self.name);
+        if !base.contains('.') {
+            candidates.push(format!("{}.otf", self.name));
+            candidates.push(format!("{}.ttf", self.name));
+        }
+        candidates
     }
 }
 
-impl<L> FontSystem for RustybuzzFontSystem<L>
-where
-    L: FontLoader,
-{
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        let font = self.loader.load_font(query)?;
-        validate_font(&font)?;
-        self.loaded_fonts.borrow_mut().insert(
-            font.id.0,
-            CachedFont {
-                data: font.clone(),
-                size: query.size,
-            },
-        );
-        Ok(font)
+/// Splits a spec into name, file flag, face index, variant and feature text, as XeTeX's `splitFontName`.
+fn split_font_name(spec: &str) -> (String, bool, u32, &str, &str) {
+    if let Some(inner) = spec.strip_prefix('[') {
+        let (path, after) = inner.split_once(']').unwrap_or((inner, ""));
+        let (path, face_index) = match path.rsplit_once(':') {
+            Some((path, index)) if index.bytes().all(|byte| byte.is_ascii_digit()) => {
+                (path, index.parse().unwrap_or(0))
+            }
+            _ => (path, 0),
+        };
+        let (variant, features) = after.split_once(':').unwrap_or((after, ""));
+        return (path.to_string(), true, face_index, variant, features);
+    }
+    let (head, features) = spec.split_once(':').unwrap_or((spec, ""));
+    let (name, variant) = head.split_once('/').unwrap_or((head, ""));
+    (name.to_string(), false, 0, variant, features)
+}
+
+/// Pads or truncates a tag to four bytes with spaces, as HarfBuzz's `hb_tag_from_string`.
+fn ot_tag(tag: &str) -> [u8; 4] {
+    let bytes = tag.trim().as_bytes();
+    std::array::from_fn(|index| bytes.get(index).copied().unwrap_or(b' '))
+}
+
+/// Reads an optionally negative leading decimal, as XeTeX's feature parameter loop.
+fn leading_int(text: &str) -> i64 {
+    let (negative, digits) = text
+        .strip_prefix('-')
+        .map_or((false, text), |rest| (true, rest));
+    let value = digits
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .fold(0i64, |value, digit| {
+            value
+                .saturating_mul(10)
+                .saturating_add(i64::from(digit - b'0'))
+        });
+    if negative {
+        -value
+    } else {
+        value
+    }
+}
+
+/// An OpenType feature setting, such as `ssty=1` for math script size variants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapeFeature {
+    /// Four byte OpenType feature tag.
+    pub tag: [u8; 4],
+    /// Feature value, 0 disables and 1 selects the first alternate.
+    pub value: u32,
+}
+
+/// Loads fonts from an in process map keyed by file name.
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryFontLoader {
+    fonts: BTreeMap<String, FontData>,
+    next_key: u64,
+}
+
+impl InMemoryFontLoader {
+    /// Creates an empty loader.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        let cached = self
-            .loaded_fonts
-            .borrow()
-            .get(&request.font.0)
+    /// Adds a font by file name and returns the loader.
+    #[must_use]
+    pub fn with_font(mut self, file: impl Into<String>, bytes: impl Into<Arc<[u8]>>) -> Self {
+        self.insert(file, bytes);
+        self
+    }
+
+    /// Adds or replaces a font by file name and returns its key, keys are never reused.
+    pub fn insert(&mut self, file: impl Into<String>, bytes: impl Into<Arc<[u8]>>) -> FontKey {
+        self.next_key += 1;
+        let key = FontKey(self.next_key);
+        self.fonts.insert(file.into(), FontData::new(key, bytes));
+        key
+    }
+
+    /// Adds or replaces a font the host built, keeping the host's key.
+    pub fn insert_font_data(&mut self, file: impl Into<String>, font: FontData) {
+        self.fonts.insert(file.into(), font);
+    }
+}
+
+impl FontLoader for InMemoryFontLoader {
+    fn load(&self, spec: &FontSpec) -> Result<FontData, FontError> {
+        spec.file_candidates()
+            .iter()
+            .find_map(|name| self.fonts.get(name))
             .cloned()
             .ok_or_else(|| FontError::NotFound {
-                family: format!("font id {}", request.font.0),
-            })?;
-        shape_with_rustybuzz(&cached, request)
+                name: spec.name().to_string(),
+            })
     }
 }
 
-impl<L> FontLoader for RustybuzzFontSystem<L>
-where
-    L: FontLoader,
-{
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        FontSystem::load_font(self, query)
-    }
-}
-
-impl<L> TextShaper for RustybuzzFontSystem<L>
-where
-    L: FontLoader,
-{
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        FontSystem::shape_text(self, request)
-    }
-}
-
-/// Font lookup request.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FontQuery {
-    /// Family name as seen by the font resolver.
-    pub family: String,
-    /// Size in scaled points.
-    pub size: Length,
-    /// Whether math font tables are required.
-    pub math: bool,
-}
-
-/// Corner of an OpenType `MathKernInfo` record (mirrors HarfBuzz `hb_ot_math_kern_t`).
+/// Corner of an OpenType `MathKernInfo` record, as HarfBuzz's `hb_ot_math_kern_t`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MathKernCorner {
     /// Superscript on the right.
@@ -228,131 +317,106 @@ pub enum MathKernCorner {
     BottomLeft,
 }
 
-/// One part of an OpenType math glyph assembly, with all measurements in scaled points.
+/// A larger OpenType math glyph variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MathVariant {
+    /// The variant glyph.
+    pub glyph: GlyphId,
+    /// Advance along the stretch axis in scaled points.
+    pub advance: i32,
+}
+
+/// One part of an OpenType math glyph assembly, measurements in scaled points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MathAssemblyPart {
-    /// Glyph id for this assembly part.
-    pub glyph: u32,
-    /// Start connector overlap at the leading edge, in scaled points.
+    /// The part's glyph.
+    pub glyph: GlyphId,
+    /// Connector overlap at the leading edge.
     pub start_connector: i32,
-    /// End connector overlap at the trailing edge, in scaled points.
+    /// Connector overlap at the trailing edge.
     pub end_connector: i32,
-    /// Full advance along the assembly axis, in scaled points.
+    /// Advance along the assembly axis.
     pub full_advance: i32,
-    /// Whether this part is an extender (repeatable to reach the target size).
+    /// Whether the part repeats to reach the target size.
     pub extender: bool,
 }
 
-/// Face the application parsed and owns, the library borrows it and never parses or copies.
+/// A face the host parsed and owns, the library borrows it and never parses or copies it.
 pub trait SharedFace: Send + Sync {
-    /// Returns the rustybuzz face the application parsed.
+    /// Returns the rustybuzz face the host parsed.
     fn rustybuzz_face(&self) -> &rustybuzz::Face<'_>;
 
-    /// Returns the ttf view of the face, defaults to the ttf face inside the rustybuzz face.
+    /// Returns the ttf view of the face, by default the one inside the rustybuzz face.
     fn ttf_face(&self) -> &ttf_parser::Face<'_> {
         self.rustybuzz_face()
     }
 }
 
-/// Where the parsed faces come from: library cached bytes, or a face the application owns.
+/// Where a font's parsed faces come from.
+#[derive(Clone)]
 enum FaceSource {
     Bytes {
         bytes: Arc<[u8]>,
-        // Parse caches are shared across clones, so a face is parsed once per font, not once per clone.
-        ttf: Arc<once_cell::race::OnceBox<ParsedFace>>,
-        rustybuzz: Arc<once_cell::race::OnceBox<ParsedRustybuzzFace>>,
+        // Clones share these caches, so a face is parsed once per font rather than once per clone.
+        ttf: Arc<OnceLock<ParsedFace>>,
+        rustybuzz: Arc<OnceLock<ParsedRustybuzzFace>>,
     },
     Shared(Arc<dyn SharedFace>),
 }
 
-impl Clone for FaceSource {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Bytes {
-                bytes,
-                ttf,
-                rustybuzz,
-            } => Self::Bytes {
-                bytes: Arc::clone(bytes),
-                ttf: Arc::clone(ttf),
-                rustybuzz: Arc::clone(rustybuzz),
-            },
-            Self::Shared(face) => Self::Shared(Arc::clone(face)),
-        }
-    }
-}
-
-/// Loaded font identity plus its face source.
+/// A loaded font face and the key the host chose for it.
+#[derive(Clone)]
 pub struct FontData {
-    /// Stable font identity.
-    pub id: FontId,
-    /// Canonical font family or face name.
-    pub canonical_name: String,
+    /// Host chosen identity, carried into the IR's font references.
+    pub key: FontKey,
     source: FaceSource,
-}
-
-impl Clone for FontData {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            canonical_name: self.canonical_name.clone(),
-            source: self.source.clone(),
-        }
-    }
 }
 
 impl PartialEq for FontData {
     fn eq(&self, other: &Self) -> bool {
-        let sources_equal = match (&self.source, &other.source) {
+        let same_face = match (&self.source, &other.source) {
             (FaceSource::Bytes { bytes: a, .. }, FaceSource::Bytes { bytes: b, .. }) => a == b,
             (FaceSource::Shared(a), FaceSource::Shared(b)) => Arc::ptr_eq(a, b),
             _ => false,
         };
-        self.id == other.id && self.canonical_name == other.canonical_name && sources_equal
+        self.key == other.key && same_face
     }
 }
 
 impl Eq for FontData {}
 
-impl core::fmt::Debug for FontData {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for FontData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FontData")
-            .field("id", &self.id)
-            .field("canonical_name", &self.canonical_name)
+            .field("key", &self.key)
             .finish_non_exhaustive()
     }
 }
 
 impl FontData {
-    /// Create font data from an id, canonical name, and raw bytes, the library parses lazily, once.
+    /// Wraps raw font bytes, parsed lazily and at most once.
     #[must_use]
-    pub fn new(id: FontId, canonical_name: impl Into<String>, bytes: impl Into<Arc<[u8]>>) -> Self {
+    pub fn new(key: FontKey, bytes: impl Into<Arc<[u8]>>) -> Self {
         Self {
-            id,
-            canonical_name: canonical_name.into(),
+            key,
             source: FaceSource::Bytes {
                 bytes: bytes.into(),
-                ttf: Arc::new(once_cell::race::OnceBox::new()),
-                rustybuzz: Arc::new(once_cell::race::OnceBox::new()),
+                ttf: Arc::default(),
+                rustybuzz: Arc::default(),
             },
         }
     }
 
-    /// Create font data from a face the application already parsed, the library never parses it.
+    /// Wraps a face the host already parsed, the library never parses it.
     #[must_use]
-    pub fn from_shared_face(
-        id: FontId,
-        canonical_name: impl Into<String>,
-        face: Arc<dyn SharedFace>,
-    ) -> Self {
+    pub fn from_shared_face(key: FontKey, face: Arc<dyn SharedFace>) -> Self {
         Self {
-            id,
-            canonical_name: canonical_name.into(),
+            key,
             source: FaceSource::Shared(face),
         }
     }
 
-    /// Returns the raw bytes when the library owns them, None for application shared faces.
+    /// Returns the raw bytes the library owns, `None` for host shared faces.
     #[must_use]
     pub fn bytes(&self) -> Option<&Arc<[u8]>> {
         match &self.source {
@@ -361,64 +425,57 @@ impl FontData {
         }
     }
 
-    /// Runs `f` with the ttf face, parsed at most once, shared across clones.
+    /// Runs `f` with the ttf face, parsed at most once and shared across clones.
     pub fn with_ttf_face<R>(
         &self,
         f: impl FnOnce(&ttf_parser::Face<'_>) -> R,
     ) -> Result<R, FontError> {
-        Ok(f(parse_face(self)?))
+        Ok(f(self.ttf_face()?))
     }
 
-    /// Runs `f` with the rustybuzz face, parsed at most once, shared across clones and with shaping.
+    /// Runs `f` with the rustybuzz face, parsed at most once and shared across clones.
     pub fn with_rustybuzz_face<R>(
         &self,
         f: impl FnOnce(&rustybuzz::Face<'_>) -> R,
     ) -> Result<R, FontError> {
-        Ok(f(parse_rustybuzz_face(self)?))
+        Ok(f(self.rustybuzz_face()?))
     }
 
-    /// Parse overall font metrics at the requested size.
+    /// Overall metrics at `size`, as XeTeX reads them for a native font.
     pub fn metrics(&self, size: Length) -> Result<FontMetrics, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
+        let face = self.ttf_face()?;
+        let upem = units_per_em(face);
+        // XeTeX's getSlant is D2Fix(tan(-italicAngle)), italicAngle is the post table angle in degrees.
+        let angle = f64::from(face.italic_angle());
         Ok(FontMetrics {
-            ascent: scale_font_units(i32::from(face.ascender()), size, units_per_em),
-            descent: scale_font_units(i32::from(face.descender()), size, units_per_em),
-            xheight: scale_font_units(i32::from(face.x_height().unwrap_or(0)), size, units_per_em),
-            capheight: scale_font_units(
-                i32::from(face.capital_height().unwrap_or(0)),
-                size,
-                units_per_em,
-            ),
-            slant: (face.italic_angle() * 65_536.0) as i32,
+            ascent: scale_font_units(i32::from(face.ascender()), size, upem),
+            descent: -scale_font_units(i32::from(face.descender()), size, upem),
+            xheight: scale_font_units(i32::from(face.x_height().unwrap_or(0)), size, upem),
+            capheight: scale_font_units(i32::from(face.capital_height().unwrap_or(0)), size, upem),
+            slant: d2fix((-angle).to_radians().tan()),
         })
     }
 
-    /// Return metrics for a glyph at the requested size.
+    /// Width, height and depth of a glyph at `size`, from its advance and bounding box.
     pub fn glyph_metrics(
         &self,
         glyph: GlyphId,
         size: Length,
     ) -> Result<FontGlyphMetrics, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        let Ok(glyph_id) = u16::try_from(glyph.0) else {
+        let face = self.ttf_face()?;
+        let upem = units_per_em(face);
+        let Some(glyph) = ttf_glyph(glyph) else {
             return Ok(FontGlyphMetrics::default());
         };
-        let glyph_id = ttf_parser::GlyphId(glyph_id);
-        let width = face
-            .glyph_hor_advance(glyph_id)
-            .map(|advance| scale_font_units(i32::from(advance), size, units_per_em))
-            .unwrap_or(0);
-        let (height, depth) = face
-            .glyph_bounding_box(glyph_id)
-            .map(|bbox| {
-                (
-                    scale_font_units(i32::from(bbox.y_max).max(0), size, units_per_em),
-                    scale_font_units((-i32::from(bbox.y_min)).max(0), size, units_per_em),
-                )
-            })
-            .unwrap_or((0, 0));
+        let width = face.glyph_hor_advance(glyph).map_or(0, |advance| {
+            scale_font_units(i32::from(advance), size, upem)
+        });
+        let (height, depth) = face.glyph_bounding_box(glyph).map_or((0, 0), |bbox| {
+            (
+                scale_font_units(i32::from(bbox.y_max).max(0), size, upem),
+                scale_font_units((-i32::from(bbox.y_min)).max(0), size, upem),
+            )
+        });
         Ok(FontGlyphMetrics {
             width,
             height,
@@ -426,87 +483,133 @@ impl FontData {
         })
     }
 
-    /// Return outlines in font design units with y pointing up, one entry per input glyph.
+    /// Advance and control box of a glyph in points at `size`, as XeTeX's `getGlyphBounds` reads them.
+    pub fn glyph_bounds_points(
+        &self,
+        glyph: GlyphId,
+        size: Length,
+    ) -> Result<GlyphBoundsPoints, FontError> {
+        let face = self.ttf_face()?;
+        // XeTeX's unitsToPoints multiplies by the f32 point size before dividing by units per em.
+        let upem = f32::from(face.units_per_em().max(1));
+        let point_size = point_size(size);
+        let points = |units: f32| (units * point_size) / upem;
+        let Some(glyph) = ttf_glyph(glyph) else {
+            return Ok(GlyphBoundsPoints::default());
+        };
+        let advance = face
+            .glyph_hor_advance(glyph)
+            .map_or(0.0, |advance| points(f32::from(advance)));
+        Ok(face.glyph_bounding_box(glyph).map_or(
+            GlyphBoundsPoints {
+                advance,
+                ..GlyphBoundsPoints::default()
+            },
+            |bbox| GlyphBoundsPoints {
+                advance,
+                x_min: points(f32::from(bbox.x_min)),
+                y_min: points(f32::from(bbox.y_min)),
+                x_max: points(f32::from(bbox.x_max)),
+                y_max: points(f32::from(bbox.y_max)),
+            },
+        ))
+    }
+
+    /// Smallest and largest code points the Unicode cmaps map to a glyph, as FreeType's first and last char.
+    pub fn char_code_range(&self) -> Result<Option<(u32, u32)>, FontError> {
+        let face = self.ttf_face()?;
+        let Some(cmap) = face.tables().cmap else {
+            return Ok(None);
+        };
+        let mut range: Option<(u32, u32)> = None;
+        for subtable in cmap.subtables {
+            if !subtable.is_unicode() {
+                continue;
+            }
+            subtable.codepoints(|codepoint| {
+                if subtable
+                    .glyph_index(codepoint)
+                    .is_some_and(|glyph| glyph.0 != 0)
+                {
+                    range = Some(range.map_or((codepoint, codepoint), |(low, high)| {
+                        (low.min(codepoint), high.max(codepoint))
+                    }));
+                }
+            });
+        }
+        Ok(range)
+    }
+
+    /// Outlines in font design units with y up, one entry per glyph, `None` for blank glyphs.
     pub fn glyph_outlines(
         &self,
         glyphs: &[GlyphId],
     ) -> Result<Vec<Option<GlyphOutline>>, FontError> {
-        let face = parse_face(self)?;
+        let face = self.ttf_face()?;
         let units_per_em = face.units_per_em();
-        let mut out = Vec::with_capacity(glyphs.len());
-        for glyph in glyphs.iter().copied() {
-            let Ok(glyph_id) = u16::try_from(glyph.0) else {
-                out.push(None);
-                continue;
-            };
-            let mut collector = OutlineCollector {
-                commands: Vec::new(),
-            };
-            // `outline_glyph` returns `None` for blank or bitmap only glyphs, treat as absent.
-            if face
-                .outline_glyph(ttf_parser::GlyphId(glyph_id), &mut collector)
-                .is_none()
-            {
-                out.push(None);
-            } else {
-                out.push(Some(GlyphOutline {
+        Ok(glyphs
+            .iter()
+            .map(|&glyph| {
+                let glyph = ttf_glyph(glyph)?;
+                let mut collector = OutlineCollector {
+                    commands: Vec::new(),
+                };
+                face.outline_glyph(glyph, &mut collector)?;
+                Some(GlyphOutline {
                     units_per_em,
                     commands: collector.commands,
-                }));
-            }
-        }
-        Ok(out)
+                })
+            })
+            .collect())
     }
 
-    /// Look up a glyph id by Unicode codepoint.
+    /// Looks a glyph up by Unicode code point.
     pub fn glyph_index(&self, codepoint: char) -> Result<Option<GlyphId>, FontError> {
-        let face = parse_face(self)?;
-        Ok(face
+        Ok(self
+            .ttf_face()?
             .glyph_index(codepoint)
             .map(|glyph| GlyphId(u32::from(glyph.0))))
     }
 
-    /// Look up a glyph id by glyph name.
+    /// Looks a glyph up by glyph name.
     pub fn glyph_index_by_name(&self, name: &str) -> Result<Option<GlyphId>, FontError> {
-        let face = parse_face(self)?;
-        Ok(face
+        Ok(self
+            .ttf_face()?
             .glyph_index_by_name(name)
             .map(|glyph| GlyphId(u32::from(glyph.0))))
     }
 
-    /// Report whether the font has an OpenType math table.
+    /// Whether the font has an OpenType math table.
     pub fn has_opentype_math(&self) -> Result<bool, FontError> {
-        Ok(parse_face(self)?.tables().math.is_some())
+        Ok(self.ttf_face()?.tables().math.is_some())
     }
 
-    /// Number of glyphs in the font (`\XeTeXcountglyphs`).
+    /// Number of glyphs in the font, `\XeTeXcountglyphs`.
     pub fn ot_glyph_count(&self) -> Result<u32, FontError> {
-        Ok(u32::from(parse_face(self)?.number_of_glyphs()))
+        Ok(u32::from(self.ttf_face()?.number_of_glyphs()))
     }
 
-    /// Number of OpenType layout scripts from the larger layout script list.
+    /// Number of scripts in the larger of the GSUB and GPOS script lists.
     pub fn ot_script_count(&self) -> Result<u32, FontError> {
-        let face = parse_face(self)?;
-        Ok(larger_script_list(face).map_or(0, |scripts| u32::from(scripts.len())))
+        Ok(larger_script_list(self.ttf_face()?).map_or(0, |scripts| u32::from(scripts.len())))
     }
 
-    /// OpenType script tag at `index`, packed big endian to match XeTeX `hb_tag_t` encoding.
+    /// Script tag at `index`, packed big endian as XeTeX's `hb_tag_t`.
     pub fn ot_script_tag(&self, index: u32) -> Result<u32, FontError> {
         let Ok(index) = u16::try_from(index) else {
             return Ok(0);
         };
-        let face = parse_face(self)?;
-        Ok(larger_script_list(face)
+        Ok(larger_script_list(self.ttf_face()?)
             .and_then(|scripts| scripts.get(index))
             .map_or(0, |script| script.tag.0))
     }
 
-    /// Number of languages under `script_tag`, summed across OpenType layout tables.
+    /// Number of languages under `script_tag`, summed across GSUB and GPOS.
     pub fn ot_language_count(&self, script_tag: u32) -> Result<u32, FontError> {
-        let face = parse_face(self)?;
+        let face = self.ttf_face()?;
         let script_tag = ttf_parser::Tag(script_tag);
         let mut count = 0u32;
-        for table in [face.tables().gsub, face.tables().gpos].into_iter().flatten() {
+        for table in layout_tables(face) {
             if let Some(script) = table
                 .scripts
                 .index(script_tag)
@@ -518,14 +621,14 @@ impl FontData {
         Ok(count)
     }
 
-    /// Language tag at `index` under `script_tag` (`\XeTeXOTlanguagetag`).
+    /// Language tag at `index` under `script_tag`, `\XeTeXOTlanguagetag`.
     pub fn ot_language_tag(&self, script_tag: u32, index: u32) -> Result<u32, FontError> {
         let Ok(index) = u16::try_from(index) else {
             return Ok(0);
         };
-        let face = parse_face(self)?;
+        let face = self.ttf_face()?;
         let script_tag = ttf_parser::Tag(script_tag);
-        for table in [face.tables().gsub, face.tables().gpos].into_iter().flatten() {
+        for table in layout_tables(face) {
             if let Some(script) = table
                 .scripts
                 .index(script_tag)
@@ -539,12 +642,12 @@ impl FontData {
         Ok(0)
     }
 
-    /// Number of features under `script_tag` and `language_tag`, summed across OpenType layout tables.
+    /// Number of features under `script_tag` and `language_tag`, summed across GSUB and GPOS.
     pub fn ot_feature_count(&self, script_tag: u32, language_tag: u32) -> Result<u32, FontError> {
-        let face = parse_face(self)?;
+        let face = self.ttf_face()?;
         let script_tag = ttf_parser::Tag(script_tag);
         let mut count = 0u32;
-        for table in [face.tables().gsub, face.tables().gpos].into_iter().flatten() {
+        for table in layout_tables(face) {
             if let Some(langsys) = language_system(table, script_tag, language_tag) {
                 count += u32::from(langsys.feature_indices.len());
             }
@@ -552,7 +655,7 @@ impl FontData {
         Ok(count)
     }
 
-    /// Feature tag at `index` under `script_tag`/`language_tag` (`\XeTeXOTfeaturetag`).
+    /// Feature tag at `index` under `script_tag` and `language_tag`, `\XeTeXOTfeaturetag`.
     pub fn ot_feature_tag(
         &self,
         script_tag: u32,
@@ -562,78 +665,75 @@ impl FontData {
         let Ok(index) = u16::try_from(index) else {
             return Ok(0);
         };
-        let face = parse_face(self)?;
+        let face = self.ttf_face()?;
         let script_tag = ttf_parser::Tag(script_tag);
-        for table in [face.tables().gsub, face.tables().gpos].into_iter().flatten() {
+        for table in layout_tables(face) {
             if let Some(langsys) = language_system(table, script_tag, language_tag) {
-                if index < langsys.feature_indices.len() {
-                    if let Some(feature_index) = langsys.feature_indices.get(index) {
-                        return Ok(table
-                            .features
-                            .get(feature_index)
-                            .map_or(0, |feature| feature.tag.0));
-                    }
+                if let Some(feature_index) = langsys.feature_indices.get(index) {
+                    return Ok(table
+                        .features
+                        .get(feature_index)
+                        .map_or(0, |feature| feature.tag.0));
                 }
             }
         }
         Ok(0)
     }
 
-    /// OpenType math constant by XeTeX and HarfBuzz constant index.
+    /// OpenType math constant by XeTeX and HarfBuzz index, in scaled points or percent.
     pub fn opentype_math_constant(&self, constant: i32, size: Length) -> Result<i32, FontError> {
-        let face = parse_face(self)?;
+        let face = self.ttf_face()?;
         let Some(constants) = face.tables().math.and_then(|table| table.constants) else {
             return Ok(0);
         };
-        let units_per_em = i32::from(face.units_per_em()).max(1);
         let Some(value) = math_constant_value(constants, constant) else {
             return Ok(0);
         };
         if is_math_constant_percentage(constant) {
             Ok(value)
         } else {
-            Ok(scale_font_units(value, size, units_per_em))
+            Ok(scale_font_units(value, size, units_per_em(face)))
         }
     }
 
-    /// OpenType math italic correction for a glyph, scaled to scaled points.
+    /// OpenType math italic correction of a glyph, in scaled points.
     pub fn math_italic_correction(&self, glyph: GlyphId, size: Length) -> Result<i32, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        let Ok(glyph_id) = u16::try_from(glyph.0) else {
-            return Ok(0);
-        };
-        let Some(corrections) = face
-            .tables()
-            .math
-            .and_then(|table| table.glyph_info)
-            .and_then(|info| info.italic_corrections)
-        else {
-            return Ok(0);
-        };
-        let Some(value) = corrections.get(ttf_parser::GlyphId(glyph_id)) else {
-            return Ok(0);
-        };
-        Ok(scale_font_units(i32::from(value.value), size, units_per_em))
+        let face = self.ttf_face()?;
+        let value = ttf_glyph(glyph).and_then(|glyph| {
+            face.tables()
+                .math?
+                .glyph_info?
+                .italic_corrections?
+                .get(glyph)
+        });
+        Ok(value.map_or(0, |value| {
+            scale_font_units(i32::from(value.value), size, units_per_em(face))
+        }))
     }
 
-    /// Evaluate one OpenType math `MathKernInfo` corner at a correction height in font design units.
+    /// One `MathKernInfo` corner at a correction height in scaled points, in scaled points.
     pub fn math_kern_at(
         &self,
         glyph: GlyphId,
         corner: MathKernCorner,
         correction_height: i32,
+        size: Length,
     ) -> Result<i32, FontError> {
-        let face = parse_face(self)?;
-        let Ok(glyph_id) = u16::try_from(glyph.0) else {
-            return Ok(0);
-        };
-        let Some(kern_info) = face
-            .tables()
-            .math
-            .and_then(|table| table.glyph_info)
-            .and_then(|info| info.kern_infos)
-            .and_then(|infos| infos.get(ttf_parser::GlyphId(glyph_id)))
+        let height = self.points_to_units((correction_height as f32) / 65536.0, size)? as i32;
+        let kern = self.math_kern_units(glyph, corner, height)?;
+        self.units_to_scaled(kern, size)
+    }
+
+    /// One `MathKernInfo` corner in font design units, XeTeX sums kerns in these units before scaling.
+    pub fn math_kern_units(
+        &self,
+        glyph: GlyphId,
+        corner: MathKernCorner,
+        correction_height: i32,
+    ) -> Result<i32, FontError> {
+        let face = self.ttf_face()?;
+        let Some(kern_info) = ttf_glyph(glyph)
+            .and_then(|glyph| face.tables().math?.glyph_info?.kern_infos?.get(glyph))
         else {
             return Ok(0);
         };
@@ -646,161 +746,119 @@ impl FontData {
         let Some(kern) = kern else {
             return Ok(0);
         };
-        let count = kern.count();
-        let mut i = 0u16;
-        while i < count {
-            match kern.height(i) {
-                Some(h) if correction_height < i32::from(h.value) => break,
-                _ => i += 1,
+        let mut index = 0u16;
+        while index < kern.count() {
+            match kern.height(index) {
+                Some(height) if correction_height < i32::from(height.value) => break,
+                _ => index += 1,
             }
         }
-        Ok(kern.kern(i).map(|v| i32::from(v.value)).unwrap_or(0))
+        Ok(kern.kern(index).map_or(0, |value| i32::from(value.value)))
     }
 
-    /// Return the larger OpenType math glyph variant at `index`, with its advance scaled to points.
+    /// The larger math glyph variant at `index`, `None` past the last one.
     pub fn math_variant(
         &self,
         glyph: GlyphId,
         index: u16,
         horizontal: bool,
         size: Length,
-    ) -> Result<Option<(u32, i32)>, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        let Ok(glyph_id) = u16::try_from(glyph.0) else {
-            return Ok(None);
-        };
-        let Some(variants) = face.tables().math.and_then(|table| table.variants) else {
-            return Ok(None);
-        };
-        let constructions = if horizontal {
-            variants.horizontal_constructions
-        } else {
-            variants.vertical_constructions
-        };
-        let Some(construction) = constructions.get(ttf_parser::GlyphId(glyph_id)) else {
-            return Ok(None);
-        };
-        let Some(variant) = construction.variants.get(index) else {
-            return Ok(None);
-        };
-        let advance = scale_font_units(
-            i32::from(variant.advance_measurement),
-            size,
-            units_per_em,
-        );
-        Ok(Some((u32::from(variant.variant_glyph.0), advance)))
+    ) -> Result<Option<MathVariant>, FontError> {
+        let face = self.ttf_face()?;
+        let variant = ttf_glyph(glyph).and_then(|glyph| {
+            math_constructions(face, horizontal)?
+                .get(glyph)?
+                .variants
+                .get(index)
+        });
+        Ok(variant.map(|variant| MathVariant {
+            glyph: GlyphId(u32::from(variant.variant_glyph.0)),
+            advance: scale_font_units(
+                i32::from(variant.advance_measurement),
+                size,
+                units_per_em(face),
+            ),
+        }))
     }
 
-    /// OpenType math glyph assembly parts, each metric scaled to scaled points.
+    /// Math glyph assembly parts, measurements in scaled points, empty when the glyph has none.
     pub fn math_assembly(
         &self,
         glyph: GlyphId,
         horizontal: bool,
         size: Length,
     ) -> Result<Vec<MathAssemblyPart>, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        let Ok(glyph_id) = u16::try_from(glyph.0) else {
-            return Ok(Vec::new());
-        };
-        let Some(variants) = face.tables().math.and_then(|table| table.variants) else {
-            return Ok(Vec::new());
-        };
-        let constructions = if horizontal {
-            variants.horizontal_constructions
-        } else {
-            variants.vertical_constructions
-        };
-        let Some(assembly) = constructions
-            .get(ttf_parser::GlyphId(glyph_id))
-            .and_then(|construction| construction.assembly)
+        let face = self.ttf_face()?;
+        let upem = units_per_em(face);
+        let Some(assembly) = ttf_glyph(glyph)
+            .and_then(|glyph| math_constructions(face, horizontal)?.get(glyph)?.assembly)
         else {
             return Ok(Vec::new());
         };
-        let parts = assembly
+        let scale = |units: u16| scale_font_units(i32::from(units), size, upem);
+        Ok(assembly
             .parts
             .into_iter()
             .map(|part| MathAssemblyPart {
-                glyph: u32::from(part.glyph_id.0),
-                start_connector: scale_font_units(
-                    i32::from(part.start_connector_length),
-                    size,
-                    units_per_em,
-                ),
-                end_connector: scale_font_units(
-                    i32::from(part.end_connector_length),
-                    size,
-                    units_per_em,
-                ),
-                full_advance: scale_font_units(
-                    i32::from(part.full_advance),
-                    size,
-                    units_per_em,
-                ),
+                glyph: GlyphId(u32::from(part.glyph_id.0)),
+                start_connector: scale(part.start_connector_length),
+                end_connector: scale(part.end_connector_length),
+                full_advance: scale(part.full_advance),
                 extender: part.part_flags.extender(),
             })
-            .collect();
-        Ok(parts)
+            .collect())
     }
 
-    /// OpenType math minimum connector overlap between assembly parts, in scaled points.
+    /// Minimum connector overlap between assembly parts, in scaled points.
     pub fn math_min_connector_overlap(&self, size: Length) -> Result<i32, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
+        let face = self.ttf_face()?;
         let overlap = face
             .tables()
             .math
             .and_then(|table| table.variants)
-            .map(|variants| i32::from(variants.min_connector_overlap))
-            .unwrap_or(0);
-        Ok(scale_font_units(overlap, size, units_per_em))
+            .map_or(0, |variants| i32::from(variants.min_connector_overlap));
+        Ok(scale_font_units(overlap, size, units_per_em(face)))
     }
 
-    /// Convert points to font design units using XeTeX `pointsToUnits` in `f32`.
+    /// Converts points to design units in f32, as XeTeX's `pointsToUnits`.
     pub fn points_to_units(&self, points: f32, size: Length) -> Result<f32, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        let point_size = (f64::from(size.0) / 65536.0) as f32;
+        let upem = units_per_em(self.ttf_face()?);
+        let point_size = point_size(size);
         if point_size == 0.0 {
             return Ok(0.0);
         }
-        Ok((points * units_per_em as f32) / point_size)
+        Ok((points * upem as f32) / point_size)
     }
 
-    /// Convert font design units to scaled points using XeTeX `D2Fix(unitsToPoints(...))`.
+    /// Converts design units to scaled points, as XeTeX's `D2Fix(unitsToPoints(units))`.
     pub fn units_to_scaled(&self, units: i32, size: Length) -> Result<i32, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        Ok(scale_font_units(units, size, units_per_em))
+        Ok(scale_font_units(
+            units,
+            size,
+            units_per_em(self.ttf_face()?),
+        ))
     }
 
-    /// Top accent attachment position for `glyph`, scaled to scaled points (`\XeTeXmathaccent`).
+    /// Top accent attachment of a glyph in scaled points, `\XeTeXmathaccent`.
     pub fn opentype_math_accent_position(
         &self,
         glyph: GlyphId,
         size: Length,
     ) -> Result<i32, FontError> {
-        let face = parse_face(self)?;
-        let units_per_em = i32::from(face.units_per_em()).max(1);
-        let Ok(glyph_id) = u16::try_from(glyph.0) else {
-            return Ok(0);
-        };
-        let Some(attachments) = face
-            .tables()
-            .math
-            .and_then(|table| table.glyph_info)
-            .and_then(|info| info.top_accent_attachments)
-        else {
-            return Ok(0);
-        };
-        let Some(value) = attachments.get(ttf_parser::GlyphId(glyph_id)) else {
-            return Ok(0);
-        };
-        Ok(scale_font_units(i32::from(value.value), size, units_per_em))
+        let face = self.ttf_face()?;
+        let value = ttf_glyph(glyph).and_then(|glyph| {
+            face.tables()
+                .math?
+                .glyph_info?
+                .top_accent_attachments?
+                .get(glyph)
+        });
+        Ok(value.map_or(0, |value| {
+            scale_font_units(i32::from(value.value), size, units_per_em(face))
+        }))
     }
 
-    /// Return the symbol font parameter at `parameter` index, mapping to OpenType math constants.
+    /// Symbol font parameter mapped to OpenType math constants, as XeTeX's `get_native_mathsy_param`.
     pub fn math_symbol_parameter(&self, parameter: i32, size: Length) -> Result<i32, FontError> {
         match parameter {
             5 => self.opentype_math_constant(6, size),
@@ -827,7 +885,7 @@ impl FontData {
         }
     }
 
-    /// Return the extension font parameter at `parameter` index, mapping to OpenType math constants.
+    /// Extension font parameter mapped to OpenType math constants, as XeTeX's `get_native_mathex_param`.
     pub fn math_extension_parameter(&self, parameter: i32, size: Length) -> Result<i32, FontError> {
         match parameter {
             5 => self.opentype_math_constant(6, size),
@@ -841,105 +899,131 @@ impl FontData {
             _ => Ok(0),
         }
     }
+
+    fn invalid(&self, message: String) -> FontError {
+        FontError::Invalid {
+            name: format!("font key {}", self.key.0),
+            message,
+        }
+    }
+
+    fn ttf_face(&self) -> Result<&ttf_parser::Face<'_>, FontError> {
+        match &self.source {
+            FaceSource::Shared(face) => Ok(face.ttf_face()),
+            FaceSource::Bytes { bytes, ttf, .. } => {
+                if ttf.get().is_none() {
+                    let parsed = ParsedFace::try_new(Arc::clone(bytes), |bytes| {
+                        ttf_parser::Face::parse(bytes, 0)
+                            .map_err(|error| self.invalid(format!("invalid font data: {error}")))
+                    })?;
+                    // A racing initializer may win, either way the cell is populated afterwards.
+                    let _ = ttf.set(parsed);
+                }
+                Ok(ttf
+                    .get()
+                    .expect("ttf cache populated above")
+                    .borrow_dependent())
+            }
+        }
+    }
+
+    fn rustybuzz_face(&self) -> Result<&rustybuzz::Face<'_>, FontError> {
+        match &self.source {
+            FaceSource::Shared(face) => Ok(face.rustybuzz_face()),
+            FaceSource::Bytes {
+                bytes, rustybuzz, ..
+            } => {
+                if rustybuzz.get().is_none() {
+                    let parsed = ParsedRustybuzzFace::try_new(Arc::clone(bytes), |bytes| {
+                        rustybuzz::Face::from_slice(bytes, 0)
+                            .ok_or_else(|| self.invalid("invalid font data".to_string()))
+                    })?;
+                    let _ = rustybuzz.set(parsed);
+                }
+                Ok(rustybuzz
+                    .get()
+                    .expect("rustybuzz cache populated above")
+                    .borrow_dependent())
+            }
+        }
+    }
 }
 
-/// Overall font metrics in TeX scaled point units.
+/// Overall font metrics in scaled points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FontMetrics {
-    /// Distance from baseline to top of typical ascenders.
+    /// Distance from the baseline up to the ascender line.
     pub ascent: i32,
-    /// Distance from baseline to bottom of typical descenders (negative).
+    /// Distance from the baseline down to the descender line, positive like a TeX depth.
     pub descent: i32,
     /// Height of a lowercase x.
     pub xheight: i32,
     /// Height of a capital letter.
     pub capheight: i32,
-    /// Italic slant as a fixed point angle.
+    /// Slant as a 16.16 fixed point ratio, `\fontdimen1`.
     pub slant: i32,
 }
 
-/// Metrics for a single glyph in TeX scaled point units.
+/// Metrics of one glyph in scaled points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FontGlyphMetrics {
-    /// Horizontal advance width.
+    /// Horizontal advance.
     pub width: i32,
-    /// Height above baseline.
+    /// Height above the baseline.
     pub height: i32,
-    /// Depth below baseline.
+    /// Depth below the baseline.
     pub depth: i32,
 }
 
-/// OpenType feature request (tag + value), e.g. `ssty=1` for math script size substitution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ShapeFeature {
-    /// Four byte OpenType feature tag, e.g. `*b"ssty"`.
-    pub tag: [u8; 4],
-    /// One based alternate index for `ssty`, `0` disables the feature.
-    pub value: u32,
+/// A glyph's advance and control box in points, y up.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GlyphBoundsPoints {
+    /// Horizontal advance.
+    pub advance: f32,
+    /// Left edge of the control box.
+    pub x_min: f32,
+    /// Bottom edge of the control box.
+    pub y_min: f32,
+    /// Right edge of the control box.
+    pub x_max: f32,
+    /// Top edge of the control box.
+    pub y_max: f32,
 }
 
-/// Text shaping request.
+/// Font loading or parsing failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShapeRequest<'a> {
-    /// Font to use for shaping, identified by its `FontId`.
-    pub font: FontId,
-    /// Input text to shape.
-    pub text: &'a str,
-    /// Text direction for the buffer.
-    pub direction: Direction,
-    /// Source span for cluster mapping.
-    pub source: Option<ByteSpan>,
-    /// OpenType script tag override, e.g. `*b"math"`, for features under the `math` script.
-    pub script: Option<[u8; 4]>,
-    /// OpenType features to apply during shaping, e.g. `ssty=1`.
-    pub features: Vec<ShapeFeature>,
+#[non_exhaustive]
+pub enum FontError {
+    /// The loader has no font for the spec.
+    NotFound {
+        /// The name the spec asked for.
+        name: String,
+    },
+    /// The font exists but is unusable.
+    Invalid {
+        /// The font's name or key.
+        name: String,
+        /// Why the font is unusable.
+        message: String,
+    },
 }
 
-/// Shaped text result.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ShapedText {
-    /// Glyphs in visual order.
-    pub glyphs: Vec<PositionedGlyph>,
-}
-
-impl ShapedText {
-    /// Construct a `ShapedText` from a glyph vec.
-    #[must_use]
-    pub fn new(glyphs: impl Into<Vec<PositionedGlyph>>) -> Self {
-        Self {
-            glyphs: glyphs.into(),
+impl fmt::Display for FontError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound { name } => write!(f, "font not found: {name}"),
+            Self::Invalid { name, message } => write!(f, "font {name} is unusable: {message}"),
         }
     }
 }
 
-/// Font system failure.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum FontError {
-    /// Font was not found by the loader.
-    NotFound {
-        /// Family name that was requested.
-        family: String,
-    },
-    /// Font exists but cannot satisfy the request.
-    Invalid {
-        /// Family name.
-        family: String,
-        /// Reason the font is unusable.
-        message: String,
-    },
-    /// Text shaping is not supported by this font system.
-    ShapingUnsupported {
-        /// Reason shaping is unsupported.
-        message: String,
-    },
-}
+impl std::error::Error for FontError {}
 
-/// Alias so the self_cell dependent type names its lifetime explicitly.
+/// Names the self_cell dependent's lifetime.
 type TtfFace<'a> = ttf_parser::Face<'a>;
 
 self_cell::self_cell!(
-    /// Owns `Arc<[u8]>` together with the `ttf_parser::Face` parsed from it.
+    /// Owns font bytes together with the ttf face parsed from them.
     struct ParsedFace {
         owner: Arc<[u8]>,
         #[covariant]
@@ -947,11 +1031,11 @@ self_cell::self_cell!(
     }
 );
 
-/// Alias so the self_cell dependent type names its lifetime explicitly.
+/// Names the self_cell dependent's lifetime.
 type RbFace<'a> = rustybuzz::Face<'a>;
 
 self_cell::self_cell!(
-    /// Owns `Arc<[u8]>` together with the `rustybuzz::Face` parsed from it.
+    /// Owns font bytes together with the rustybuzz face parsed from them.
     struct ParsedRustybuzzFace {
         owner: Arc<[u8]>,
         #[covariant]
@@ -959,35 +1043,41 @@ self_cell::self_cell!(
     }
 );
 
-/// Returns the rustybuzz face: the application face when shared, one cached parse otherwise.
-fn parse_rustybuzz_face(font: &FontData) -> Result<&rustybuzz::Face<'_>, FontError> {
-    match &font.source {
-        FaceSource::Shared(face) => Ok(face.rustybuzz_face()),
-        FaceSource::Bytes {
-            bytes, rustybuzz, ..
-        } => {
-            if rustybuzz.get().is_none() {
-                let parsed = ParsedRustybuzzFace::try_new(Arc::clone(bytes), |bytes| {
-                    rustybuzz::Face::from_slice(bytes, 0).ok_or_else(|| FontError::Invalid {
-                        family: font.canonical_name.clone(),
-                        message: "invalid font data".to_string(),
-                    })
-                })?;
-                let _ = rustybuzz.set(alloc::boxed::Box::new(parsed));
-            }
-            Ok(rustybuzz
-                .get()
-                .expect("rustybuzz cache populated above")
-                .borrow_dependent())
-        }
-    }
+fn units_per_em(face: &ttf_parser::Face<'_>) -> i32 {
+    i32::from(face.units_per_em()).max(1)
 }
 
-fn validate_font(font: &FontData) -> Result<(), FontError> {
-    parse_face(font).map(|_| ())
+fn ttf_glyph(glyph: GlyphId) -> Option<ttf_parser::GlyphId> {
+    u16::try_from(glyph.0).ok().map(ttf_parser::GlyphId)
 }
 
-/// Larger OpenType layout script list, mirroring XeTeX `getLargerScriptListTable`.
+/// XeTeX keeps the point size as f32 in `XeTeXFontInst`.
+fn point_size(size: Length) -> f32 {
+    (f64::from(size.0) / 65536.0) as f32
+}
+
+/// XeTeX's D2Fix, a C cast truncates toward zero after adding one half.
+fn d2fix(value: f64) -> i32 {
+    (value * 65536.0 + 0.5)
+        .trunc()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+/// Scales design units to scaled points as XeTeX's `D2Fix(unitsToPoints(value))`.
+fn scale_font_units(value: i32, size: Length, units_per_em: i32) -> i32 {
+    let points = (value as f32 * point_size(size)) / (units_per_em.max(1) as f32);
+    d2fix(f64::from(points))
+}
+
+fn layout_tables<'a>(
+    face: &ttf_parser::Face<'a>,
+) -> impl Iterator<Item = ttf_parser::opentype_layout::LayoutTable<'a>> {
+    [face.tables().gsub, face.tables().gpos]
+        .into_iter()
+        .flatten()
+}
+
+/// The larger of the GSUB and GPOS script lists, as XeTeX's `getLargerScriptListTable`.
 fn larger_script_list<'a>(
     face: &ttf_parser::Face<'a>,
 ) -> Option<ttf_parser::opentype_layout::ScriptList<'a>> {
@@ -999,7 +1089,7 @@ fn larger_script_list<'a>(
     }
 }
 
-/// Resolve a language system, `language_tag == 0` selects the script default.
+/// Resolves a language system, `language_tag == 0` selects the script default.
 fn language_system<'a>(
     table: ttf_parser::opentype_layout::LayoutTable<'a>,
     script_tag: ttf_parser::Tag,
@@ -1020,29 +1110,19 @@ fn language_system<'a>(
     }
 }
 
-/// Returns the ttf face: the application face when shared, one cached parse otherwise.
-fn parse_face(font: &FontData) -> Result<&ttf_parser::Face<'_>, FontError> {
-    let invalid = |error: ttf_parser::FaceParsingError| FontError::Invalid {
-        family: font.canonical_name.clone(),
-        message: format!("invalid font data: {error:?}"),
-    };
-
-    match &font.source {
-        FaceSource::Shared(face) => Ok(face.ttf_face()),
-        FaceSource::Bytes { bytes, ttf, .. } => {
-            if ttf.get().is_none() {
-                let parsed = ParsedFace::try_new(Arc::clone(bytes), |bytes| {
-                    ttf_parser::Face::parse(bytes, 0).map_err(invalid)
-                })?;
-                // `set` only fails when another initializer raced, `get` is populated either way.
-                let _ = ttf.set(alloc::boxed::Box::new(parsed));
-            }
-            Ok(ttf.get().expect("ttf cache populated above").borrow_dependent())
-        }
-    }
+fn math_constructions<'a>(
+    face: &ttf_parser::Face<'a>,
+    horizontal: bool,
+) -> Option<ttf_parser::math::GlyphConstructions<'a>> {
+    let variants = face.tables().math?.variants?;
+    Some(if horizontal {
+        variants.horizontal_constructions
+    } else {
+        variants.vertical_constructions
+    })
 }
 
-/// Collects `ttf_parser` contour callbacks into [`OutlineCommand`]s.
+/// Collects ttf-parser contour callbacks into [`OutlineCommand`]s.
 struct OutlineCollector {
     commands: Vec<OutlineCommand>,
 }
@@ -1147,252 +1227,160 @@ fn is_math_constant_percentage(constant: i32) -> bool {
     matches!(constant, 0 | 1 | 55)
 }
 
-fn shape_with_rustybuzz(
-    cached: &CachedFont,
-    request: &ShapeRequest<'_>,
-) -> Result<ShapedText, FontError> {
-    let face = parse_rustybuzz_face(&cached.data)?;
-    let mut buffer = rustybuzz::UnicodeBuffer::new();
-    buffer.push_str(request.text);
-    buffer.set_direction(match request.direction {
-        Direction::LeftToRight => rustybuzz::Direction::LeftToRight,
-        Direction::RightToLeft => rustybuzz::Direction::RightToLeft,
-        Direction::TopToBottom => rustybuzz::Direction::TopToBottom,
-        _ => rustybuzz::Direction::LeftToRight,
-    });
-    buffer.guess_segment_properties();
-    if let Some(script_tag) = request.script {
-        // `from_iso15924_tag` maps `math` so rustybuzz selects the script with `ssty` lookups.
-        if let Some(script) =
-            rustybuzz::Script::from_iso15924_tag(ttf_parser::Tag::from_bytes(&script_tag))
-        {
-            buffer.set_script(script);
-        }
-    }
-
-    let features: Vec<rustybuzz::Feature> = request
-        .features
-        .iter()
-        .map(|feature| {
-            rustybuzz::Feature::new(ttf_parser::Tag::from_bytes(&feature.tag), feature.value, ..)
-        })
-        .collect();
-    let shaped = rustybuzz::shape(face, &features, buffer);
-    let infos = shaped.glyph_infos();
-    let positions = shaped.glyph_positions();
-    let units_per_em = face.units_per_em().max(1);
-    let glyphs = infos
-        .iter()
-        .zip(positions.iter())
-        .map(|(info, position)| PositionedGlyph {
-            glyph_id: GlyphId(info.glyph_id),
-            advance: Point {
-                x: scaled_font_units(position.x_advance, cached.size, units_per_em),
-                y: scaled_font_units(position.y_advance, cached.size, units_per_em),
-            },
-            offset: Point {
-                x: scaled_font_units(position.x_offset, cached.size, units_per_em),
-                y: scaled_font_units(position.y_offset, cached.size, units_per_em),
-            },
-            cluster: request
-                .source
-                .map(|source| cluster_source_span(request.text, source, info.cluster)),
-        })
-        .collect();
-
-    Ok(ShapedText { glyphs })
-}
-
-fn scaled_font_units(value: i32, size: Length, units_per_em: i32) -> Length {
-    Length::from_scaled_points(scale_font_units(value, size, units_per_em))
-}
-
-    /// Scale font design units to scaled points, reproducing XeTeX arithmetic.
-fn scale_font_units(value: i32, size: Length, units_per_em: i32) -> i32 {
-    // m_pointSize is f32 in XeTeXFontInst, unitsToPoints runs in f32 before D2Fix promotes to f64.
-    let point_size = (f64::from(size.0) / 65536.0) as f32;
-    let points = (value as f32 * point_size) / (units_per_em.max(1) as f32);
-    // D2Fix uses truncation because C integer casts truncate toward zero.
-    let fixed = (f64::from(points) * 65536.0 + 0.5).trunc();
-    fixed.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-fn cluster_source_span(text: &str, source: ByteSpan, cluster: u32) -> ByteSpan {
-    let start = usize::try_from(cluster)
-        .ok()
-        .map(|cluster| cluster.min(text.len()))
-        .unwrap_or(text.len());
-    let mut end = text.len();
-    for (index, _) in text.char_indices() {
-        if index > start {
-            end = index;
-            break;
-        }
-    }
-    ByteSpan {
-        start: source.start.saturating_add(start as u32),
-        end: source.start.saturating_add(end as u32).min(source.end),
-    }
-}
-
-/// Deterministic empty font system.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoFontSystem;
-
-impl FontSystem for NoFontSystem {
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        Err(FontError::NotFound {
-            family: query.family.clone(),
-        })
-    }
-
-    fn shape_text(&self, _request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        Err(FontError::ShapingUnsupported {
-            message: "no font shaper configured".to_string(),
-        })
-    }
-}
-
-/// Font system backed by an in process font map, for embedded and browser environments.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct InMemoryFontSystem {
-    fonts: BTreeMap<String, FontData>,
-    shape_without_native_engine: bool,
-}
-
-impl InMemoryFontSystem {
-    /// Create an empty in memory font system.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Enable deterministic fallback shaping for tests and bootstrap, without a native shaping engine.
-    #[must_use]
-    pub fn with_fallback_shaping(mut self) -> Self {
-        self.shape_without_native_engine = true;
-        self
-    }
-
-    /// Add a font by family name and return `self`.
-    #[must_use]
-    pub fn with_font(mut self, family: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
-        self.insert(family, bytes);
-        self
-    }
-
-    /// Insert or replace a font.
-    pub fn insert(&mut self, family: impl Into<String>, bytes: impl Into<Vec<u8>>) {
-        let family = family.into();
-        let id = FontId(self.fonts.len() as u32);
-        let bytes: Vec<u8> = bytes.into();
-        self.fonts
-            .insert(family.clone(), FontData::new(id, family, bytes));
-    }
-
-    /// Add a font the application already constructed, sharing its parsed faces, and return `self`.
-    #[must_use]
-    pub fn with_font_data(mut self, font: FontData) -> Self {
-        self.insert_font_data(font);
-        self
-    }
-
-    /// Insert or replace an application owned font keyed by its canonical name, parses stay shared.
-    pub fn insert_font_data(&mut self, font: FontData) {
-        self.fonts.insert(font.canonical_name.clone(), font);
-    }
-}
-
-impl FontSystem for InMemoryFontSystem {
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        self.fonts
-            .get(&query.family)
-            .cloned()
-            .ok_or_else(|| FontError::NotFound {
-                family: query.family.clone(),
-            })
-    }
-
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        if !self.shape_without_native_engine {
-            return Err(FontError::ShapingUnsupported {
-                message: "fallback shaping is disabled".to_string(),
-            });
-        }
-
-        let glyphs = request
-            .text
-            .char_indices()
-            .enumerate()
-            .map(|(index, (byte_offset, ch))| {
-                let start = request
-                    .source
-                    .map_or(byte_offset as u32, |span| span.start + byte_offset as u32);
-                PositionedGlyph {
-                    glyph_id: GlyphId(ch as u32),
-                    offset: Point {
-                        x: Length::from_scaled_points((index as i32) * 65_536),
-                        y: Length::ZERO,
-                    },
-                    advance: Point {
-                        x: Length::from_scaled_points(65_536),
-                        y: Length::ZERO,
-                    },
-                    cluster: Some(ByteSpan {
-                        start,
-                        end: start + ch.len_utf8() as u32,
-                    }),
-                }
-            })
-            .collect();
-
-        Ok(ShapedText { glyphs })
-    }
-}
-
-impl FontLoader for InMemoryFontSystem {
-    fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-        FontSystem::load_font(self, query)
-    }
-}
-
-impl TextShaper for InMemoryFontSystem {
-    fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-        FontSystem::shape_text(self, request)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
-    const DEJAVU: &[u8] =
-        include_bytes!("../../../vendor/texlive-source/libs/gd/libgd-src/tests/freetype/DejaVuSans.ttf");
+    const PT: i32 = 65_536;
+    const LM_MATH: &str = "fonts/opentype/public/lm-math/latinmodern-math.otf";
+    const LM_ITALIC: &str = "fonts/opentype/public/lm/lmroman10-italic.otf";
+    const STIX_MATH: &str = "fonts/opentype/public/stix2-otf/STIXTwoMath-Regular.otf";
+
+    /// Reads a font under `MATHTEX_TEXMF_ROOT`, `None` when the variable is unset.
+    fn texlive_font(relative: &str) -> Option<FontData> {
+        let Some(root) = std::env::var_os("MATHTEX_TEXMF_ROOT") else {
+            assert!(
+                std::env::var("MATHTEX_REQUIRE_TEXLIVE").as_deref() != Ok("1"),
+                "MATHTEX_REQUIRE_TEXLIVE=1 but MATHTEX_TEXMF_ROOT is not set"
+            );
+            eprintln!("skipping: MATHTEX_TEXMF_ROOT is not set");
+            return None;
+        };
+        let path = Path::new(&root).join(relative);
+        let bytes = std::fs::read(&path).unwrap_or_else(|error| {
+            panic!(
+                "MATHTEX_TEXMF_ROOT is set but {} is unreadable: {error}",
+                path.display()
+            )
+        });
+        Some(FontData::new(FontKey(1), bytes))
+    }
+
+    /// Reads a font from the texlive-source fixtures, `None` after a skip notice.
+    fn fixture_font(relative: &str) -> Option<FontData> {
+        mathtex_test_fixtures::read(relative).map(|bytes| FontData::new(FontKey(2), bytes))
+    }
+
+    fn ten_pt() -> Length {
+        Length(10 * PT)
+    }
+
+    #[test]
+    fn spec_parses_files_features_and_suffixes() {
+        let spec = FontSpec::parse(
+            "[latinmodern-math.otf]:script=math;+ssty=0;-liga,language=DEU;mapping=tex-text;kern=2",
+            ten_pt(),
+        );
+        assert!(spec.is_file());
+        assert_eq!(spec.name(), "latinmodern-math.otf");
+        assert_eq!(spec.script(), Some(*b"math"));
+        assert_eq!(spec.language(), Some("DEU"));
+        assert_eq!(spec.option("mapping"), Some("tex-text"));
+        assert_eq!(
+            spec.features(),
+            [
+                ShapeFeature {
+                    tag: *b"ssty",
+                    value: 1
+                },
+                ShapeFeature {
+                    tag: *b"liga",
+                    value: 0
+                },
+                ShapeFeature {
+                    tag: *b"kern",
+                    value: 2
+                },
+            ]
+        );
+        assert_eq!(spec.file_candidates(), ["latinmodern-math.otf"]);
+
+        let spec = FontSpec::parse("Latin Modern Roman/B/OT:+smcp;vertical;bogus", ten_pt());
+        assert!(!spec.is_file());
+        assert_eq!(spec.name(), "Latin Modern Roman");
+        assert_eq!(spec.variants(), ["B", "OT"]);
+        assert_eq!(
+            spec.features(),
+            [ShapeFeature {
+                tag: *b"smcp",
+                value: 1
+            }]
+        );
+        assert!(spec.vertical());
+        assert_eq!(spec.unknown_options(), ["bogus"]);
+
+        let spec = FontSpec::parse("[fonts/collection.ttc:2]/AAT:color=FF0000", ten_pt());
+        assert_eq!(spec.name(), "fonts/collection.ttc");
+        assert_eq!(spec.face_index(), 2);
+        assert_eq!(spec.variants(), ["AAT"]);
+        assert_eq!(spec.option("color"), Some("FF0000"));
+        assert_eq!(spec.size(), ten_pt());
+
+        let spec = FontSpec::parse("lmroman10-regular:+tlig=-1", ten_pt());
+        assert_eq!(
+            spec.file_candidates(),
+            [
+                "lmroman10-regular",
+                "lmroman10-regular.otf",
+                "lmroman10-regular.ttf"
+            ]
+        );
+        assert_eq!(spec.features()[0].value, u32::MAX);
+    }
+
+    #[test]
+    fn in_memory_loader_resolves_candidates_and_never_reuses_keys() {
+        let mut fonts = InMemoryFontLoader::new();
+        let first = fonts.insert("a.otf", b"one".to_vec());
+        let second = fonts.insert("b.otf", b"two".to_vec());
+        let replaced = fonts.insert("a.otf", b"three".to_vec());
+        assert_ne!(first, second);
+        assert_ne!(replaced, first);
+        assert_ne!(replaced, second);
+
+        let font = fonts.load(&FontSpec::parse("a", ten_pt())).expect("a.otf");
+        assert_eq!(font.key, replaced);
+        assert_eq!(&**font.bytes().expect("owned bytes"), b"three");
+        assert_eq!(
+            fonts.load(&FontSpec::parse("[missing.otf]", ten_pt())),
+            Err(FontError::NotFound {
+                name: "missing.otf".into()
+            })
+        );
+    }
+
+    #[test]
+    fn scale_font_units_matches_xetex_d2fix_rounding() {
+        // The latinmodern-math `2` rounds 436469.76sp up to 436470 as XeTeX does.
+        assert_eq!(scale_font_units(666, ten_pt(), 1000), 436_470);
+        assert_eq!(scale_font_units(431, ten_pt(), 1000), 282_460);
+        assert_eq!(scale_font_units(528, ten_pt(), 1000), 346_030);
+        assert_eq!(scale_font_units(16, ten_pt(), 1000), 10_486);
+        // D2Fix truncates after adding one half, so minus 10485.26 becomes minus 10485.
+        assert_eq!(scale_font_units(-16, ten_pt(), 1000), -10_485);
+        assert_eq!(scale_font_units(0, ten_pt(), 1000), 0);
+    }
 
     #[test]
     fn font_data_clones_share_both_parsed_faces() {
-        let font = FontData::new(FontId(7), "DejaVu Sans", DEJAVU.to_vec());
+        let Some(font) = fixture_font(mathtex_test_fixtures::DEJAVU_SANS) else {
+            return;
+        };
         let clone = font.clone();
-
-        let ttf_ptr = font
-            .with_ttf_face(|face| face as *const ttf_parser::Face<'_> as usize)
-            .expect("ttf parse");
-        let clone_ttf_ptr = clone
-            .with_ttf_face(|face| face as *const ttf_parser::Face<'_> as usize)
-            .expect("ttf parse via clone");
-        assert_eq!(ttf_ptr, clone_ttf_ptr, "clone must reuse the same ttf parse");
-
-        let rb_ptr = font
-            .with_rustybuzz_face(|face| face as *const rustybuzz::Face<'_> as usize)
-            .expect("rustybuzz parse");
-        let clone_rb_ptr = clone
-            .with_rustybuzz_face(|face| face as *const rustybuzz::Face<'_> as usize)
-            .expect("rustybuzz parse via clone");
-        assert_eq!(rb_ptr, clone_rb_ptr, "clone must reuse the same rustybuzz parse");
-
+        let ttf = |font: &FontData| {
+            font.with_ttf_face(|face| face as *const ttf_parser::Face<'_> as usize)
+                .expect("ttf parse")
+        };
+        let rb = |font: &FontData| {
+            font.with_rustybuzz_face(|face| face as *const rustybuzz::Face<'_> as usize)
+                .expect("rustybuzz parse")
+        };
+        assert_eq!(ttf(&font), ttf(&clone));
+        assert_eq!(rb(&font), rb(&clone));
         assert!(Arc::ptr_eq(
-            font.bytes().expect("library owned bytes"),
-            clone.bytes().expect("library owned bytes"),
+            font.bytes().expect("owned bytes"),
+            clone.bytes().expect("owned bytes")
         ));
     }
 
@@ -1413,29 +1401,25 @@ mod tests {
     }
 
     #[test]
-    fn application_owned_face_is_borrowed_and_never_parsed_by_the_library() {
-        let bytes: Arc<[u8]> = DEJAVU.to_vec().into();
-        let app_face = AppShared(
-            AppOwnedFace::try_new(Arc::clone(&bytes), |bytes| {
-                rustybuzz::Face::from_slice(bytes, 0).ok_or("app parse failed")
-            })
-            .expect("application parses its own font"),
-        );
-        let app_face: Arc<dyn SharedFace> = Arc::new(app_face);
+    fn host_owned_face_is_borrowed_and_never_parsed_by_the_library() {
+        let Some(owned) = fixture_font(mathtex_test_fixtures::LM_MONO) else {
+            return;
+        };
+        let bytes = Arc::clone(owned.bytes().expect("owned bytes"));
+        let app_face = AppOwnedFace::try_new(bytes, |bytes| {
+            rustybuzz::Face::from_slice(bytes, 0).ok_or("host parse failed")
+        })
+        .expect("host parses its own font");
+        let app_face: Arc<dyn SharedFace> = Arc::new(AppShared(app_face));
         let app_ptr = app_face.rustybuzz_face() as *const rustybuzz::Face<'_> as usize;
+        let font = FontData::from_shared_face(FontKey(3), Arc::clone(&app_face));
 
-        let font = FontData::from_shared_face(FontId(3), "DejaVu Sans", Arc::clone(&app_face));
-
-        assert!(font.bytes().is_none(), "the library holds no bytes");
+        assert!(font.bytes().is_none());
         let lib_ptr = font
             .with_rustybuzz_face(|face| face as *const rustybuzz::Face<'_> as usize)
             .expect("borrow shared face");
-        assert_eq!(lib_ptr, app_ptr, "the library must borrow the application face");
-
-        let metrics = font.metrics(Length::from_scaled_points(655_360)).expect("metrics");
-        assert!(metrics.ascent > 0);
-        let glyph = font.glyph_index('A').expect("glyph lookup");
-        assert!(glyph.is_some());
+        assert_eq!(lib_ptr, app_ptr);
+        assert!(font.metrics(ten_pt()).expect("metrics").ascent > 0);
     }
 
     #[test]
@@ -1445,329 +1429,143 @@ mod tests {
     }
 
     #[test]
-    fn fallback_shaping_preserves_source_clusters() {
-        let fonts = InMemoryFontSystem::new().with_fallback_shaping();
-        let shaped = FontSystem::shape_text(
-            &fonts,
-            &ShapeRequest {
-                font: FontId(0),
-                text: "ab",
-                direction: Direction::LeftToRight,
-                source: Some(ByteSpan { start: 4, end: 6 }),
-                script: None,
-                features: Vec::new(),
-            },
-        )
-        .expect("fallback shaping should work");
-
-        assert_eq!(shaped.glyphs.len(), 2);
-        assert_eq!(shaped.glyphs[0].glyph_id, GlyphId('a' as u32));
-        assert_eq!(
-            shaped.glyphs[0].cluster,
-            Some(ByteSpan { start: 4, end: 5 })
-        );
-        assert_eq!(
-            shaped.glyphs[1].cluster,
-            Some(ByteSpan { start: 5, end: 6 })
-        );
-    }
-
-    #[test]
-    fn no_font_system_makes_missing_font_explicit() {
-        let error = NoFontSystem
-            .load_font(&FontQuery {
-                family: "missing".to_string(),
-                size: Length::ZERO,
-                math: false,
-            })
-            .expect_err("font should be missing");
-
-        assert_eq!(
-            error,
-            FontError::NotFound {
-                family: "missing".to_string(),
-            }
-        );
-    }
-
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    struct TestLoader;
-
-    impl FontLoader for TestLoader {
-        fn load_font(&self, query: &FontQuery) -> Result<FontData, FontError> {
-            Ok(FontData::new(
-                FontId(9),
-                query.family.clone(),
-                b"parsed-by-rust-loader".to_vec(),
-            ))
-        }
-    }
-
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    struct TestShaper;
-
-    impl TextShaper for TestShaper {
-        fn shape_text(&self, request: &ShapeRequest<'_>) -> Result<ShapedText, FontError> {
-            Ok(ShapedText::new(alloc::vec![PositionedGlyph {
-                glyph_id: GlyphId(100),
-                offset: Point::default(),
-                advance: Point {
-                    x: Length::from_scaled_points(request.text.len() as i32),
-                    y: Length::ZERO,
-                },
-                cluster: request.source,
-            }]))
-        }
-    }
-
-    #[test]
-    fn composed_font_system_splits_loading_from_shaping() {
-        let fonts = ComposedFontSystem::new(TestLoader, TestShaper);
-
-        let font = fonts
-            .load_font(&FontQuery {
-                family: "Latin Modern Math".to_string(),
-                size: Length::from_scaled_points(12 * 65_536),
-                math: true,
-            })
-            .expect("loader should resolve font");
-        let shaped = fonts
-            .shape_text(&ShapeRequest {
-                font: font.id,
-                text: "xy",
-                direction: Direction::LeftToRight,
-                source: Some(ByteSpan { start: 2, end: 4 }),
-                script: None,
-                features: Vec::new(),
-            })
-            .expect("shaper should shape text");
-
-        assert_eq!(font.id, FontId(9));
-        assert_eq!(
-            &**font.bytes().expect("library owned bytes"),
-            b"parsed-by-rust-loader"
-        );
-        assert_eq!(shaped.glyphs[0].glyph_id, GlyphId(100));
-        assert_eq!(
-            shaped.glyphs[0].cluster,
-            Some(ByteSpan { start: 2, end: 4 })
-        );
-    }
-
-    #[test]
-    fn scale_font_units_matches_xetex_d2fix_rounding() {
-        // The '2' glyph in latinmodern-math rounds 436469.76sp to 436470 like XeTeX.
-        let ten_pt = Length::from_scaled_points(10 * 65_536);
-        assert_eq!(
-            scale_font_units(666, ten_pt, 1000),
-            436_470,
-            "D2Fix must round 436469.76sp up to 436470 (xetex parity)"
-        );
-        // 'x' glyph height of 431 units gives 282460.16sp, rounded to 282460.
-        assert_eq!(scale_font_units(431, ten_pt, 1000), 282_460);
-        // 'x' advance of 528 units gives 346030.08sp, rounded to 346030.
-        assert_eq!(scale_font_units(528, ten_pt, 1000), 346_030);
-        // Glyph 89 italic correction of 16 units gives 10485.76sp, rounded to 10486.
-        assert_eq!(scale_font_units(16, ten_pt, 1000), 10_486);
-        // Negative quantities use C cast truncation, so minus 10485.26 becomes minus 10485.
-        assert_eq!(scale_font_units(-16, ten_pt, 1000), -10_485);
-        assert_eq!(scale_font_units(0, ten_pt, 1000), 0);
-    }
-
-    #[test]
-    fn rustybuzz_font_system_shapes_loaded_ttf_and_reads_metrics() {
-        let fonts = RustybuzzFontSystem::new(InMemoryFontSystem::new().with_font(
-            "DejaVu Sans",
-            include_bytes!("../../../vendor/texlive-source/libs/gd/libgd-src/tests/freetype/DejaVuSans.ttf")
-                .as_slice(),
-        ));
-        let font = FontSystem::load_font(
-            &fonts,
-            &FontQuery {
-                family: "DejaVu Sans".to_string(),
-                size: Length::from_scaled_points(10 * 65_536),
-                math: false,
-            },
-        )
-        .expect("real TTF should parse");
-
-        let metrics = font
-            .metrics(Length::from_scaled_points(10 * 65_536))
-            .expect("metrics should parse");
-        let shaped = FontSystem::shape_text(
-            &fonts,
-            &ShapeRequest {
-                font: font.id,
-                text: "AV",
-                direction: Direction::LeftToRight,
-                source: Some(ByteSpan { start: 7, end: 9 }),
-                script: None,
-                features: Vec::new(),
-            },
-        )
-        .expect("rustybuzz should shape cached font");
-
-        assert!(metrics.ascent > 0);
-        assert!(shaped.glyphs.len() >= 2);
-        assert!(shaped.glyphs[0].advance.x > Length::ZERO);
-        assert_eq!(
-            shaped.glyphs[0].cluster,
-            Some(ByteSpan { start: 7, end: 8 })
-        );
-    }
-
-    const LM_MATH: &str = "/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm-math/latinmodern-math.otf";
-    const STIX_MATH: &str =
-        "/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/stix2-otf/STIXTwoMath-Regular.otf";
-
-    fn load_system_font(path: &str) -> Option<FontData> {
-        let bytes = std::fs::read(path).ok()?;
-        Some(FontData::new(FontId(1), path, bytes))
-    }
-
-    fn ten_pt() -> Length {
-        Length::from_scaled_points(10 * 65_536)
-    }
-
-    #[test]
-    fn glyph_outlines_extract_design_unit_contours_from_latinmodern() {
-        let Some(font) = load_system_font(LM_MATH) else {
-            eprintln!("SKIP: {LM_MATH} not found");
+    fn metrics_slant_is_the_tangent_of_the_italic_angle_and_descent_is_positive() {
+        let (Some(italic), Some(math)) = (texlive_font(LM_ITALIC), texlive_font(LM_MATH)) else {
             return;
         };
-        let x = font.glyph_index('x').unwrap().unwrap();
-        // The run is parsed once, 'x' has an outline and the space glyph does not.
-        let space = font.glyph_index(' ').unwrap().unwrap();
-        let outlines = font.glyph_outlines(&[x, space]).unwrap();
-        assert_eq!(outlines.len(), 2);
+        // xetex reports \fontdimen1 of lmroman10-italic.otf as 0.25pt.
+        assert_eq!(italic.metrics(ten_pt()).expect("metrics").slant, PT / 4);
+        let metrics = math.metrics(ten_pt()).expect("metrics");
+        assert_eq!(metrics.slant, 0);
+        assert!(metrics.descent > 0, "descent {}", metrics.descent);
+    }
 
-        let x_outline = outlines[0].as_ref().expect("'x' has an outline");
-        assert_eq!(x_outline.units_per_em, 1000, "lm-math upem");
-        assert!(
-            !x_outline.commands.is_empty(),
-            "'x' outline has contour commands"
-        );
-        assert!(
-            matches!(x_outline.commands[0], OutlineCommand::MoveTo { .. }),
-            "a contour starts with MoveTo"
-        );
-
-        assert!(outlines[1].is_none(), "space has no outline");
+    #[test]
+    fn glyph_outlines_extract_design_unit_contours_from_cff_and_truetype() {
+        for (file, units_per_em) in [
+            (mathtex_test_fixtures::LM_MONO, 1000),
+            (mathtex_test_fixtures::DEJAVU_SANS, 2048),
+        ] {
+            let Some(font) = fixture_font(file) else {
+                return;
+            };
+            let x = font.glyph_index('x').unwrap().unwrap();
+            let space = font.glyph_index(' ').unwrap().unwrap();
+            let outlines = font.glyph_outlines(&[x, space]).unwrap();
+            let x_outline = outlines[0].as_ref().expect("x has an outline");
+            assert_eq!(x_outline.units_per_em, units_per_em, "{file}");
+            assert!(matches!(
+                x_outline.commands[0],
+                OutlineCommand::MoveTo { .. }
+            ));
+            assert!(outlines[1].is_none(), "space has no outline in {file}");
+            // CFF draws curves as cubics and TrueType as quadratics.
+            let o = font.glyph_index('o').unwrap().unwrap();
+            let o_outline = font.glyph_outlines(&[o]).unwrap().remove(0).expect("o");
+            let cubic =
+                |command: &OutlineCommand| matches!(command, OutlineCommand::CurveTo { .. });
+            let quadratic =
+                |command: &OutlineCommand| matches!(command, OutlineCommand::QuadTo { .. });
+            let cff = file == mathtex_test_fixtures::LM_MONO;
+            assert_eq!(o_outline.commands.iter().any(cubic), cff, "{file}");
+            assert_eq!(o_outline.commands.iter().any(quadratic), !cff, "{file}");
+        }
     }
 
     #[test]
     fn math_variant_returns_larger_paren_glyphs_from_latinmodern() {
-        let Some(font) = load_system_font(LM_MATH) else {
-            eprintln!("SKIP: {LM_MATH} not found");
+        let Some(font) = texlive_font(LM_MATH) else {
             return;
         };
-        // In latinmodern-math, glyph 9 vertical variant 4 is glyph 2433 with advance 1175061 sp.
+        // Glyph 9 vertical variant 4 is glyph 2433 advancing 1175061sp at 10pt.
         let paren = font.glyph_index('(').unwrap().unwrap();
-        assert_eq!(paren.0, 9);
-        let variant = font
-            .math_variant(paren, 4, false, ten_pt())
-            .unwrap()
-            .expect("'(' has a 5th vertical variant");
-        assert_eq!(variant.0, 2433, "variant glyph id");
-        assert_eq!(variant.1, 1_175_061, "variant advance sp");
-        // variant[0] is the base glyph itself with advance 653394 sp.
-        let base = font.math_variant(paren, 0, false, ten_pt()).unwrap().unwrap();
-        assert_eq!(base, (9, 653_394));
-        // Out of range index yields None.
-        assert!(font.math_variant(paren, 99, false, ten_pt()).unwrap().is_none());
+        assert_eq!(paren, GlyphId(9));
+        assert_eq!(
+            font.math_variant(paren, 4, false, ten_pt()).unwrap(),
+            Some(MathVariant {
+                glyph: GlyphId(2433),
+                advance: 1_175_061
+            })
+        );
+        assert_eq!(
+            font.math_variant(paren, 0, false, ten_pt()).unwrap(),
+            Some(MathVariant {
+                glyph: GlyphId(9),
+                advance: 653_394
+            })
+        );
+        assert_eq!(font.math_variant(paren, 99, false, ten_pt()).unwrap(), None);
     }
 
     #[test]
     fn math_assembly_returns_paren_parts_from_latinmodern() {
-        let Some(font) = load_system_font(LM_MATH) else {
-            eprintln!("SKIP: {LM_MATH} not found");
+        let Some(font) = texlive_font(LM_MATH) else {
             return;
         };
         let paren = font.glyph_index('(').unwrap().unwrap();
         let parts = font.math_assembly(paren, false, ten_pt()).unwrap();
-        // The glyph 9 vertical assembly uses bottom 2503, extender 2504, and top 2505.
-        assert_eq!(parts.len(), 3, "'(' assembly has 3 parts");
+        let part =
+            |glyph, start_connector, end_connector, full_advance, extender| MathAssemblyPart {
+                glyph: GlyphId(glyph),
+                start_connector,
+                end_connector,
+                full_advance,
+                extender,
+            };
+        // Bottom 2503, extender 2504, top 2505, connectors of 249 and 498 units, advances of 1495 and 498.
         assert_eq!(
-            parts[0],
-            MathAssemblyPart {
-                glyph: 2503,
-                start_connector: 0,
-                end_connector: 163_185,  // 249 units
-                full_advance: 979_763,   // 1495 units
-                extender: false,
-            }
+            parts,
+            [
+                part(2503, 0, 163_185, 979_763, false),
+                part(2504, 326_369, 326_369, 326_369, true),
+                part(2505, 163_185, 0, 979_763, false),
+            ]
         );
-        assert_eq!(
-            parts[1],
-            MathAssemblyPart {
-                glyph: 2504,
-                start_connector: 326_369, // 498 units
-                end_connector: 326_369,
-                full_advance: 326_369,
-                extender: true,
-            }
-        );
-        assert_eq!(
-            parts[2],
-            MathAssemblyPart {
-                glyph: 2505,
-                start_connector: 163_185,
-                end_connector: 0,
-                full_advance: 979_763,
-                extender: false,
-            }
-        );
-        // Minimum connector overlap of 20 units gives 13107 sp at 10pt.
+        // A minimum overlap of 20 units is 13107sp at 10pt.
         assert_eq!(font.math_min_connector_overlap(ten_pt()).unwrap(), 13_107);
     }
 
     #[test]
-    fn math_kern_reads_stix_cut_ins() {
-        let Some(font) = load_system_font(STIX_MATH) else {
-            eprintln!("SKIP: {STIX_MATH} not found");
+    fn math_kern_reads_stix_cut_ins_in_units_and_scaled_points() {
+        let Some(font) = texlive_font(STIX_MATH) else {
             return;
         };
-        // 'F' glyph 8 has one TopRight superscript kern value, so any correction height returns 44.
+        // `F` has one TopRight kern of 44 units, so every height returns it.
         let f = font.glyph_index('F').unwrap().unwrap();
-        assert_eq!(f.0, 8);
         assert_eq!(
-            font.math_kern_at(f, MathKernCorner::TopRight, 0).unwrap(),
+            font.math_kern_units(f, MathKernCorner::TopRight, 0)
+                .unwrap(),
             44
         );
         assert_eq!(
-            font.math_kern_at(f, MathKernCorner::TopRight, 100_000).unwrap(),
+            font.math_kern_units(f, MathKernCorner::TopRight, 100_000)
+                .unwrap(),
             44
         );
-        // 'V' glyph 24 has BottomRight heights [126, 280] and kerns [-193, -119, 56].
+        // `V` has BottomRight heights 126 and 280 with kerns -193, -119 and 56.
         let v = font.glyph_index('V').unwrap().unwrap();
-        assert_eq!(v.0, 24);
+        let bottom_right = |height| {
+            font.math_kern_units(v, MathKernCorner::BottomRight, height)
+                .unwrap()
+        };
+        assert_eq!(bottom_right(0), -193);
+        assert_eq!(bottom_right(200), -119);
+        assert_eq!(bottom_right(300), 56);
         assert_eq!(
-            font.math_kern_at(v, MathKernCorner::BottomRight, 0).unwrap(),
-            -193,
-            "below first height -> kern[0]"
-        );
-        assert_eq!(
-            font.math_kern_at(v, MathKernCorner::BottomRight, 200).unwrap(),
-            -119,
-            "between heights -> kern[1]"
-        );
-        assert_eq!(
-            font.math_kern_at(v, MathKernCorner::BottomRight, 300).unwrap(),
-            56,
-            "above last height -> kern[last]"
-        );
-        // A glyph or corner with no kern record contributes zero.
-        assert_eq!(
-            font.math_kern_at(v, MathKernCorner::TopRight, 0).unwrap(),
+            font.math_kern_units(v, MathKernCorner::TopRight, 0)
+                .unwrap(),
             0
         );
+        // 200 units is 2pt at 10pt in a 1000 unit font, and -119 units scales like any other length.
+        let scaled = font
+            .math_kern_at(v, MathKernCorner::BottomRight, 2 * PT, ten_pt())
+            .unwrap();
+        assert_eq!(scaled, scale_font_units(-119, ten_pt(), 1000));
     }
 
     #[test]
     fn latinmodern_has_no_math_kern_info() {
-        // latinmodern-math has no MathKernInfo, so all math kern values are zero.
-        let Some(font) = load_system_font(LM_MATH) else {
-            eprintln!("SKIP: {LM_MATH} not found");
+        let Some(font) = texlive_font(LM_MATH) else {
             return;
         };
         let x = font.glyph_index('x').unwrap().unwrap();
@@ -1777,7 +1575,7 @@ mod tests {
             MathKernCorner::BottomRight,
             MathKernCorner::BottomLeft,
         ] {
-            assert_eq!(font.math_kern_at(x, corner, 0).unwrap(), 0);
+            assert_eq!(font.math_kern_units(x, corner, 0).unwrap(), 0);
         }
     }
 }

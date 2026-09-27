@@ -13,6 +13,9 @@ node_modules/
 /generated/c2rust/
 /generated/web2c/
 
+# web2c and C2Rust inputs and the test fixture clone (tools/bootstrap-texlive-web2c-c2rust.sh, tools/fetch-test-fixtures.sh)
+/cache/
+
 # wasm-pack build outputs (regenerate: wasm-pack build crates/mathtex-wasm --target nodejs|web)
 /crates/*/pkg-node/
 /crates/*/pkg-web/

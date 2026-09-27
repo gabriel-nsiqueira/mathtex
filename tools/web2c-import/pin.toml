@@ -1,0 +1,11 @@
+# Upstream inputs of the portable engine. The bootstrap script writes this file and the patcher checks it.
+[upstream]
+texlive_source = "d92f5f9896b7a15afd6106da873fc64b958eea80"
+c2rust = "C2Rust 0.22.1"
+tie = "This is TIE, CWEB Version 2.4 (TeX Live 2025)"
+otangle = "OTANGLE 4.4 (TeX Live 2025)"
+
+[inputs]
+"c2rust/xetex/src/xetex0.rs" = "9acb5faf344d89bccabef11d308e0be799440304332df45418b7187360a1ae84"
+"c2rust/xetex/src/xetexini.rs" = "76f53b50b52ba98418a2283112ebfcea1a7433d2245560559af47aa3cbf323b2"
+"web2c/xetex/xetex.pool" = "a200eb68d09360911e3694ad5aadcf28d678d417b61cb9765128fcf6cc7dc8f6"

@@ -10,6 +10,7 @@ syn = { version = "2", features = ["full", "visit", "visit-mut", "parsing", "pri
 quote = "1"
 proc-macro2 = "1"
 prettyplease = "0.2"
+sha2 = "0.10"
 
 [lints]
 workspace = true

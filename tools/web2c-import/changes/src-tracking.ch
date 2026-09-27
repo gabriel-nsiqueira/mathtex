@@ -13,8 +13,7 @@
 % tangle -> web2c -> c2rust faithfully as `srctokencopy(dest,src)' calls; the
 % patcher then replaces the procedure body to carry node_src[src]->node_src[dest].
 %
-% The anchored lines are byte-identical in tex.web and xetex.web, so this one
-% change file serves all three engines (tex, etex, xetex).
+% The anchored lines are byte-identical in tex.web and xetex.web.
 
 @x
 @p procedure flush_list(@!p:pointer); {makes list of single-word nodes

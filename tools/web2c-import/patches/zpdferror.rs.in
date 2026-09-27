@@ -1,0 +1,4 @@
+    pub(crate) unsafe fn zpdferror(&mut self, t: strnumber, p: strnumber) {
+        Self::record_stripped_pdf_extension(self as *mut PortableTexEngine<'_>);
+        Self::fatal_pdf_error(self as *mut PortableTexEngine<'_>, t, p);
+    }

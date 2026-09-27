@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 
 use syn::punctuated::Punctuated;
 use syn::token::Comma;
+use syn::visit::{self, Visit};
 use syn::visit_mut::{self, VisitMut};
-use syn::{parse_quote, parse_str, Expr, ExprCall, Local, Type};
+use syn::{parse_quote, parse_str, BinOp, Expr, ExprCall, Local, Stmt, Type};
 
 use crate::synpass::MethodUnit;
 
@@ -26,8 +27,8 @@ fn normalize_type_string(raw: &str) -> String {
         if prev_space && !out.is_empty() {
             // Space preserved only between word characters, stripped adjacent to punctuation.
             let last = out.chars().next_back().unwrap();
-            let word_boundary = (last.is_alphanumeric() || last == '_')
-                && (ch.is_alphanumeric() || ch == '_');
+            let word_boundary =
+                (last.is_alphanumeric() || last == '_') && (ch.is_alphanumeric() || ch == '_');
             if word_boundary {
                 out.push(' ');
             }
@@ -64,7 +65,7 @@ impl NativeLayoutEngineCastPass {
 
     fn is_stripped_cast_type(ty: &Type) -> bool {
         let rendered = type_string(ty);
-        rendered == "FontHandle" || rendered == "*mut ()" || rendered.ends_with("DictionaryRef")
+        rendered == "FontHandle" || rendered.ends_with("DictionaryRef")
     }
 }
 
@@ -258,18 +259,6 @@ impl VectorPointerPass<'_> {
 }
 
 impl VisitMut for VectorPointerPass<'_> {
-    fn visit_expr_mut(&mut self, node: &mut Expr) {
-        visit_mut::visit_expr_mut(self, node);
-        if let Expr::MethodCall(call) = node {
-            if call.method == "is_null"
-                && call.args.is_empty()
-                && self.state_vector_field(&call.receiver).is_some()
-            {
-                call.method = parse_quote!(is_empty);
-            }
-        }
-    }
-
     fn visit_local_mut(&mut self, local: &mut Local) {
         visit_mut::visit_local_mut(self, local);
         if let Some(init) = &mut local.init {
@@ -293,8 +282,7 @@ impl WidenedArrayCastPass {
             Expr::Cast(cast) if type_string(&cast.ty) == "i16" => {
                 *cast.ty = parse_quote!(integer);
             }
-            Expr::Field(field)
-                if matches!(&field.member, syn::Member::Named(ident) if ident == "B1") =>
+            Expr::Field(field) if matches!(&field.member, syn::Member::Named(ident) if ident == "B1") =>
             {
                 let inner = rhs.clone();
                 *rhs = parse_quote!(#inner as integer);
@@ -425,7 +413,7 @@ impl VisitMut for OtFontGetPass {
         let param3 = args.get(4).cloned().unwrap_or_else(|| zero.clone());
         let what = what.clone();
 
-        call.func = Box::new(parse_quote!(Self::ot_font_get));
+        *call.func = parse_quote!(Self::ot_font_get);
         let mut new_args: Punctuated<Expr, Comma> = Punctuated::new();
         new_args.push(parse_quote!(self as *mut PortableTexEngine<'_>));
         new_args.push(what);
@@ -489,10 +477,22 @@ impl VisitMut for KnownTypeMismatchPass {
 fn method_call_casts(method: &str) -> Option<&'static [ArgCast]> {
     match method {
         "zreconstitute" => Some(&[
-            ArgCast { arg_form: "j", cast_to: "smallnumber" },
-            ArgCast { arg_form: "self.state.hn", cast_to: "smallnumber" },
-            ArgCast { arg_form: "l_0", cast_to: "smallnumber" },
-            ArgCast { arg_form: "i", cast_to: "smallnumber" },
+            ArgCast {
+                arg_form: "j",
+                cast_to: "smallnumber",
+            },
+            ArgCast {
+                arg_form: "self.state.hn",
+                cast_to: "smallnumber",
+            },
+            ArgCast {
+                arg_form: "l_0",
+                cast_to: "smallnumber",
+            },
+            ArgCast {
+                arg_form: "i",
+                cast_to: "smallnumber",
+            },
             ArgCast {
                 arg_form: "*self.state.fontbchar.offset(self.state.hf as isize)",
                 cast_to: "halfword",
@@ -513,11 +513,23 @@ fn method_call_casts(method: &str) -> Option<&'static [ArgCast]> {
             cast_to: "ASCIIcode",
         }]),
         "znewcharacter" => Some(&[
-            ArgCast { arg_form: "self.state.curval", cast_to: "UTF16code" },
-            ArgCast { arg_form: "self.state.curchr", cast_to: "UTF16code" },
-            ArgCast { arg_form: "self.state.curc", cast_to: "UTF16code" },
+            ArgCast {
+                arg_form: "self.state.curval",
+                cast_to: "UTF16code",
+            },
+            ArgCast {
+                arg_form: "self.state.curchr",
+                cast_to: "UTF16code",
+            },
+            ArgCast {
+                arg_form: "self.state.curc",
+                cast_to: "UTF16code",
+            },
         ]),
-        "zeffectivechar" => Some(&[ArgCast { arg_form: "c_0", cast_to: "quarterword" }]),
+        "zeffectivechar" => Some(&[ArgCast {
+            arg_form: "c_0",
+            cast_to: "quarterword",
+        }]),
         _ => None,
     }
 }
@@ -590,7 +602,176 @@ fn assign_target_field(lhs: &Expr) -> Option<String> {
     };
     matches!(field.base.as_ref(), Expr::Field(inner)
         if matches!(&inner.member, syn::Member::Named(ident) if ident == "state"))
-        .then_some(member)
+    .then_some(member)
+}
+
+/// Rewrites discarded comparisons, dropping `interaction == 3;` and keeping the call of `f() != 0;`.
+pub(crate) struct UnusedComparisonPass;
+
+impl UnusedComparisonPass {
+    fn is_pure(expr: &Expr) -> bool {
+        match expr {
+            Expr::Lit(_) | Expr::Path(_) => true,
+            Expr::Field(field) => Self::is_pure(&field.base),
+            Expr::Cast(cast) => Self::is_pure(&cast.expr),
+            Expr::Paren(paren) => Self::is_pure(&paren.expr),
+            Expr::Unary(unary) => {
+                matches!(unary.op, syn::UnOp::Neg(_)) && Self::is_pure(&unary.expr)
+            }
+            _ => false,
+        }
+    }
+
+    /// `None` keeps the statement, `Some(None)` drops it, `Some(Some(side))` keeps only `side`.
+    fn rewrite(stmt: &Stmt) -> Option<Option<Expr>> {
+        let Stmt::Expr(Expr::Binary(binary), Some(_)) = stmt else {
+            return None;
+        };
+        if !matches!(
+            binary.op,
+            BinOp::Eq(_) | BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Le(_) | BinOp::Gt(_) | BinOp::Ge(_)
+        ) {
+            return None;
+        }
+        match (Self::is_pure(&binary.left), Self::is_pure(&binary.right)) {
+            (true, true) => Some(None),
+            (false, true) => Some(Some((*binary.left).clone())),
+            (true, false) => Some(Some((*binary.right).clone())),
+            (false, false) => None,
+        }
+    }
+}
+
+impl VisitMut for UnusedComparisonPass {
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        visit_mut::visit_block_mut(self, block);
+        let mut stmts = Vec::with_capacity(block.stmts.len());
+        for stmt in block.stmts.drain(..) {
+            match Self::rewrite(&stmt) {
+                None => stmts.push(stmt),
+                Some(None) => {}
+                Some(Some(side)) => stmts.push(Stmt::Expr(side, Some(Default::default()))),
+            }
+        }
+        block.stmts = stmts;
+    }
+}
+
+/// Rewrites tests and stores of XeTeX's glyph info pointer in memory word 5 on the whole 8 byte word.
+#[derive(Default)]
+pub(crate) struct NativeGlyphWordPass {
+    /// Sites rewritten so far, each test, store and `free` counts once.
+    pub(crate) sites: usize,
+}
+
+impl NativeGlyphWordPass {
+    /// The word `base` of a `base.ptr` field access.
+    fn ptr_base(expr: &Expr) -> Option<&Expr> {
+        let Expr::Field(field) = expr else {
+            return None;
+        };
+        matches!(&field.member, syn::Member::Named(ident) if ident == "ptr").then_some(&*field.base)
+    }
+
+    /// `free(word.ptr as *mut ());`
+    fn is_ptr_free(stmt: &Stmt) -> bool {
+        let Stmt::Expr(Expr::Call(call), Some(_)) = stmt else {
+            return false;
+        };
+        matches!(call.func.as_ref(), Expr::Path(path) if path.path.is_ident("free"))
+            && call.args.len() == 1
+            && matches!(&call.args[0], Expr::Cast(cast) if Self::ptr_base(&cast.expr).is_some())
+    }
+
+    /// `let ref mut fresh = word.ptr;` then `*fresh = nullptr as voidpointer;` as `word.raw = 0;`.
+    fn fused_null_store(local: &Stmt, next: &Stmt) -> Option<Stmt> {
+        let Stmt::Local(Local {
+            pat: syn::Pat::Ident(binding),
+            init: Some(init),
+            ..
+        }) = local
+        else {
+            return None;
+        };
+        let base = Self::ptr_base(&init.expr)?;
+        let Stmt::Expr(Expr::Assign(assign), Some(_)) = next else {
+            return None;
+        };
+        let Expr::Unary(target) = assign.left.as_ref() else {
+            return None;
+        };
+        let stores_binding = matches!(target.op, syn::UnOp::Deref(_))
+            && matches!(target.expr.as_ref(), Expr::Path(path) if path.path.is_ident(&binding.ident));
+        let stores_null = matches!(assign.right.as_ref(), Expr::Cast(cast)
+            if matches!(cast.expr.as_ref(), Expr::Path(path) if path.path.is_ident("nullptr"))
+                && type_string(&cast.ty) == "voidpointer");
+        (binding.by_ref.is_some() && stores_binding && stores_null)
+            .then(|| parse_quote!(#base.raw = 0;))
+    }
+}
+
+impl VisitMut for NativeGlyphWordPass {
+    fn visit_block_mut(&mut self, block: &mut syn::Block) {
+        visit_mut::visit_block_mut(self, block);
+        let mut stmts = Vec::with_capacity(block.stmts.len());
+        let mut rest = block.stmts.drain(..).peekable();
+        while let Some(stmt) = rest.next() {
+            if Self::is_ptr_free(&stmt) {
+                self.sites += 1;
+                continue;
+            }
+            if let Some(store) = rest
+                .peek()
+                .and_then(|next| Self::fused_null_store(&stmt, next))
+            {
+                rest.next();
+                stmts.push(store);
+                self.sites += 1;
+                continue;
+            }
+            stmts.push(stmt);
+        }
+        drop(rest);
+        block.stmts = stmts;
+    }
+
+    fn visit_expr_mut(&mut self, node: &mut Expr) {
+        visit_mut::visit_expr_mut(self, node);
+        let Expr::MethodCall(call) = node else {
+            return;
+        };
+        if call.method != "is_null" || !call.args.is_empty() {
+            return;
+        }
+        if let Some(base) = Self::ptr_base(&call.receiver) {
+            let base = base.clone();
+            *node = parse_quote!(native_glyph_word_is_null(&#base));
+            self.sites += 1;
+        }
+    }
+}
+
+/// Counts `.ptr` field accesses, none may survive [`NativeGlyphWordPass`].
+#[derive(Default)]
+struct PtrFieldCount(usize);
+
+impl Visit<'_> for PtrFieldCount {
+    fn visit_expr_field(&mut self, field: &syn::ExprField) {
+        visit::visit_expr_field(self, field);
+        if matches!(&field.member, syn::Member::Named(ident) if ident == "ptr") {
+            self.0 += 1;
+        }
+    }
+}
+
+/// Runs [`NativeGlyphWordPass`] over one method, returning it rendered, its sites and leftover `.ptr` uses.
+pub(crate) fn rewrite_native_glyph_words(block: &str) -> (String, usize, usize) {
+    let mut unit = MethodUnit::parse(block);
+    let mut pass = NativeGlyphWordPass::default();
+    pass.visit_impl_item_fn_mut(unit.method_mut());
+    let mut leftover = PtrFieldCount::default();
+    leftover.visit_impl_item_fn(unit.method_mut());
+    (unit.render(), pass.sites, leftover.0)
 }
 
 /// Run all structural AST passes over one method block, pass order mirrors `RawFunction::patch`.
@@ -623,6 +804,7 @@ pub(crate) fn run_all(
         WidenedArrayCastPass.visit_impl_item_fn_mut(method);
         OtFontGetPass.visit_impl_item_fn_mut(method);
         FourQuarterCastPass.visit_impl_item_fn_mut(method);
+        UnusedComparisonPass.visit_impl_item_fn_mut(method);
 
         let after = quote::quote!(#method).to_string();
         before != after
@@ -731,7 +913,10 @@ mod tests {
         assert!(out.contains("j as smallnumber"), "{out}");
         assert!(out.contains("self.state.hn as smallnumber"), "{out}");
         // `bchar_0`/`hyfchar` are not in the descriptor and stay bare.
-        assert!(out.contains("bchar_0,") || out.contains("bchar_0\n"), "{out}");
+        assert!(
+            out.contains("bchar_0,") || out.contains("bchar_0\n"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -760,13 +945,6 @@ mod tests {
     }
 
     #[test]
-    fn p7_is_null_becomes_is_empty() {
-        let out = run("if self.state.zmem.is_null() { return; }", &["zmem"]);
-        assert!(out.contains("self.state.zmem.is_empty()"), "{out}");
-        assert!(!out.contains("self.state.zmem.is_null()"), "{out}");
-    }
-
-    #[test]
     fn p7_non_vector_field_is_untouched() {
         let out = run("let mut x = self.state.curval;", &[]);
         assert!(!out.contains("as_mut_ptr"), "{out}");
@@ -790,8 +968,46 @@ mod tests {
     }
 
     #[test]
+    fn discarded_comparisons_keep_only_side_effects() {
+        let out = run(
+            "self.state.interaction as i32 == 3 as i32;\nlet x = a == b;\nf() != 0 as i32;\ng() == h();",
+            &[],
+        );
+        assert!(!out.contains("interaction"), "{out}");
+        assert!(out.contains("let x = a == b;"), "{out}");
+        assert!(out.contains("f();") && !out.contains("f() !="), "{out}");
+        assert!(out.contains("g() == h();"), "{out}");
+    }
+
+    #[test]
+    fn native_glyph_word_tests_stores_and_frees_use_the_whole_word() {
+        let block = concat!(
+            "pub(crate) unsafe fn f(&mut self) {\n",
+            "    if !(*mem.offset(p as isize)).ptr.is_null() {\n",
+            "        free((*mem.offset(p as isize)).ptr as *mut ());\n",
+            "        let ref mut fresh1 = (*mem.offset(p as isize)).ptr;\n",
+            "        *fresh1 = nullptr as voidpointer;\n",
+            "    }\n",
+            "    let ref mut fresh2 = (*mem.offset(q as isize)).ptr;\n",
+            "    *fresh2 = other as voidpointer;\n",
+            "}",
+        );
+        let (out, sites, leftover) = rewrite_native_glyph_words(block);
+        assert_eq!((sites, leftover), (3, 1), "{out}");
+        assert!(
+            out.contains("if !native_glyph_word_is_null(&(*mem.offset(p as isize)))"),
+            "{out}"
+        );
+        assert!(out.contains("(*mem.offset(p as isize)).raw = 0;"), "{out}");
+        assert!(!out.contains("free("), "{out}");
+        // A store of anything but null is left alone and reported as a leftover.
+        assert!(out.contains("*fresh2 = other as voidpointer;"), "{out}");
+    }
+
+    #[test]
     fn unchanged_body_is_returned_byte_identical() {
-        let block = "pub(crate) unsafe fn f(&mut self) {\n    let x = 1 as i32;\n    self.harmless();\n}";
+        let block =
+            "pub(crate) unsafe fn f(&mut self) {\n    let x = 1 as i32;\n    self.harmless();\n}";
         let out = run_all(block, boundaries(), host_renames(), &BTreeSet::new());
         assert_eq!(out, block, "an untouched body must pass through verbatim");
     }

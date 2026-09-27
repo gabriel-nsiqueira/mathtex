@@ -1,533 +1,387 @@
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+use std::fmt;
 
-use crate::profile::ProfileId;
-use crate::resource::ResourceProvider;
+use mathtex_font::FontLoader;
+use mathtex_portable_engine_generated as pe;
 
-/// Cached initialized macro/package state for an engine profile.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormatImage {
-    /// Format identifier string.
-    pub id: String,
-    /// Engine profile this format targets.
-    pub profile: ProfileId,
-    /// Packages incorporated during format initialization.
-    pub packages: Vec<FormatPackage>,
-    /// Opaque initialized state snapshot.
-    pub state: FormatState,
+use crate::adapter::{FontTable, NativeFontTable, ProviderFiles};
+use crate::resource::{ResourceError, ResourceKind, ResourceProvider};
+
+/// Magic of the packaged format container, followed by a version and a compression byte.
+const MAGIC: &[u8; 6] = b"MTXPKG";
+const VERSION: u8 = 2;
+const STORED: u8 = 0;
+const DEFLATE: u8 = 1;
+/// DEFLATE level for packaging, only the builder pays for it, not the reader.
+const DEFLATE_LEVEL: u8 = 7;
+
+/// Defines `\hostbox` when the preamble left it undefined, with its own catcodes so any regime works.
+const HOST_BOX_DEFINITION: &str = r"\ifdefined\hostbox\else\begingroup\catcode123=1 \catcode125=2 \catcode35=6 \gdef\hostbox#1{\Uhostbox#1\relax}\endgroup\fi";
+
+/// A validated packaged XeTeX format and its native fonts, the same bytes load on every little endian target.
+#[derive(Clone)]
+pub struct Format {
+    pub(crate) image: pe::PortableFormatImage,
+    pub(crate) fonts: NativeFontTable,
 }
 
-impl FormatImage {
-    /// Create an empty format image for early bootstrapping and tests.
-    #[must_use]
-    pub fn empty(id: impl Into<String>, profile: ProfileId) -> Self {
-        Self {
-            id: id.into(),
-            profile,
-            packages: Vec::new(),
-            state: FormatState::Empty,
-        }
+impl Format {
+    /// Loads a format [`FormatBuilder::build`] wrote, such as one included with `include_bytes!`.
+    pub fn from_static(bytes: &'static [u8]) -> Result<Format, FormatError> {
+        Self::decode(bytes)
     }
 
-    /// Create a format image wrapping an already-built structured snapshot.
-    #[must_use]
-    pub fn with_snapshot(
-        id: impl Into<String>,
-        profile: ProfileId,
-        snapshot: FormatSnapshot,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            profile,
-            packages: snapshot.packages.clone(),
-            state: FormatState::Structured(snapshot),
-        }
+    /// Loads a format [`FormatBuilder::build`] wrote.
+    pub fn from_owned(bytes: Vec<u8>) -> Result<Format, FormatError> {
+        Self::decode(&bytes)
     }
 
-    /// Create a [`FormatInitializer`] builder for this format id and profile.
-    #[must_use]
-    pub fn initializer(id: impl Into<String>, profile: ProfileId) -> FormatInitializer {
-        FormatInitializer::new(id, profile)
-    }
-
-    /// Start building the plain TeX format, the provider must supply `plain.tex`.
-    #[must_use]
-    pub fn plain(profile: ProfileId) -> FormatInitializer {
-        Self::initializer("plain", profile).preload_tex_input("plain.tex")
-    }
-
-    /// Start building the LaTeX format, the provider must supply `latex.ltx`.
-    #[must_use]
-    pub fn latex(profile: ProfileId) -> FormatInitializer {
-        Self::initializer("latex", profile).preload_tex_input("latex.ltx")
-    }
-
-    /// Clone the format's initialized state into a fresh mutable `SessionState`.
-    #[must_use]
-    pub fn instantiate_session_state(&self) -> SessionState {
-        match &self.state {
-            FormatState::Empty => SessionState::default(),
-            FormatState::Snapshot(bytes) => SessionState {
-                opaque_engine_state: bytes.clone(),
-                ..SessionState::default()
-            },
-            FormatState::Structured(snapshot) => SessionState {
-                macros: snapshot.macros.clone(),
-                packages: snapshot.packages.clone(),
-                resources: snapshot.resources.clone(),
-                opaque_engine_state: snapshot.opaque_engine_state.clone(),
-                registers: snapshot.registers.clone(),
-            },
-        }
-    }
-}
-
-/// Builder for a cached [`FormatImage`] initialized from package resources.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormatInitializer {
-    id: String,
-    profile: ProfileId,
-    tex_inputs: Vec<String>,
-    packages: Vec<String>,
-    macros: Vec<MacroDefinition>,
-    registers: RegisterSnapshot,
-    opaque_engine_state: Vec<u8>,
-}
-
-impl FormatInitializer {
-    /// Create a new empty format initializer for the given id and profile.
-    #[must_use]
-    pub fn new(id: impl Into<String>, profile: ProfileId) -> Self {
-        Self {
-            id: id.into(),
-            profile,
-            tex_inputs: Vec::new(),
-            packages: Vec::new(),
-            macros: Vec::new(),
-            registers: RegisterSnapshot::default(),
-            opaque_engine_state: Vec::new(),
-        }
-    }
-
-    /// Queue a TeX input file to load during format initialization.
-    #[must_use]
-    pub fn preload_tex_input(mut self, input: impl Into<String>) -> Self {
-        self.tex_inputs.push(input.into());
-        self
-    }
-
-    /// Queue a package style file to load during format initialization.
-    #[must_use]
-    pub fn preload_package(mut self, package: impl Into<String>) -> Self {
-        self.packages.push(package.into());
-        self
-    }
-
-    /// Add a macro definition to embed in the format.
-    #[must_use]
-    pub fn macro_definition(
-        mut self,
-        name: impl Into<String>,
-        replacement: impl Into<Vec<u8>>,
-    ) -> Self {
-        self.macros.push(MacroDefinition {
-            name: name.into(),
-            replacement: replacement.into(),
-        });
-        self
-    }
-
-    /// Set the initial register snapshot to embed in the format.
-    #[must_use]
-    pub fn registers(mut self, registers: RegisterSnapshot) -> Self {
-        self.registers = registers;
-        self
-    }
-
-    /// Append opaque engine seed bytes to embed in the format.
-    #[must_use]
-    pub fn opaque_engine_state(mut self, bytes: impl Into<Vec<u8>>) -> Self {
-        self.opaque_engine_state.extend(bytes.into());
-        self
-    }
-
-    /// Build the cached format by resolving preloaded resources once.
-    pub fn build<R>(self, resources: &R) -> Result<FormatImage, FormatInitError>
-    where
-        R: ResourceProvider,
-    {
-        let mut packages = Vec::with_capacity(self.packages.len());
-        let mut format_resources = Vec::with_capacity(self.tex_inputs.len() + self.packages.len());
-        let mut opaque_engine_state = self.opaque_engine_state;
-
-        for input in self.tex_inputs {
-            let resource =
-                resources
-                    .read_tex_input(&input)
-                    .map_err(|error| FormatInitError::TexInput {
-                        name: input.clone(),
-                        message: format!("{error:?}"),
-                    })?;
-            opaque_engine_state.extend(&resource.bytes);
-            format_resources.push(FormatResource {
-                name: resource.canonical_name,
-                kind: FormatResourceKind::TexInput,
-                bytes: resource.bytes,
-            });
-        }
-
-        for package in self.packages {
-            let resource_name = package_resource_name(&package);
-            let resource = resources.read_package(&resource_name).map_err(|error| {
-                FormatInitError::Package {
-                    name: resource_name.clone(),
-                    message: format!("{error:?}"),
-                }
+    fn decode(bytes: &[u8]) -> Result<Format, FormatError> {
+        let (image, fonts) = unpack(bytes)?;
+        let image =
+            pe::PortableFormatImage::from_bytes(&image).map_err(|error| FormatError::Image {
+                message: error.to_string(),
             })?;
-            let package = FormatPackage {
-                name: package,
-                version: None,
-            };
-            opaque_engine_state.extend(&resource.bytes);
-            format_resources.push(FormatResource {
-                name: resource.canonical_name,
-                kind: FormatResourceKind::Package,
-                bytes: resource.bytes,
-            });
-            packages.push(package);
-        }
-
-        let snapshot = FormatSnapshot {
-            macros: self.macros,
-            packages,
-            resources: format_resources,
-            opaque_engine_state,
-            registers: self.registers,
-        };
-
-        Ok(FormatImage::with_snapshot(self.id, self.profile, snapshot))
+        Ok(Self { image, fonts })
     }
 }
 
-/// Package that contributed to a cached format.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormatPackage {
-    /// Package name.
-    pub name: String,
-    /// Package version, if known.
-    pub version: Option<String>,
-}
-
-/// Structured initialized format state that can be cloned into sessions.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FormatSnapshot {
-    /// Macro definitions or macro state records preloaded into the format.
-    pub macros: Vec<MacroDefinition>,
-    /// Packages incorporated during format initialization.
-    pub packages: Vec<FormatPackage>,
-    /// Resources captured during format initialization.
-    pub resources: Vec<FormatResource>,
-    /// Opaque bytes for generated engine state during bootstrap.
-    pub opaque_engine_state: Vec<u8>,
-    /// Register values captured at format initialization time.
-    pub registers: RegisterSnapshot,
-}
-
-/// Resource captured while initializing a cached format.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormatResource {
-    /// Canonical resource name.
-    pub name: String,
-    /// Role of this resource in the format.
-    pub kind: FormatResourceKind,
-    /// Resource bytes captured at format initialization time.
-    pub bytes: Vec<u8>,
-}
-
-/// Resource role captured in a cached format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum FormatResourceKind {
-    /// A TeX input file loaded during format initialization.
-    TexInput,
-    /// A package style file loaded during format initialization.
-    Package,
-}
-
-/// Macro definition captured in a cached format.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MacroDefinition {
-    /// Control sequence name without leading backslash.
-    pub name: String,
-    /// Replacement text or opaque translated representation.
-    pub replacement: Vec<u8>,
-}
-
-/// Register values captured in a cached format.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RegisterSnapshot {
-    /// Snapshot of TeX count registers.
-    pub counts: Vec<i32>,
-    /// Snapshot of TeX dimension registers in scaled points.
-    pub dimensions: Vec<i32>,
-    /// Snapshot of TeX token list registers as opaque bytes.
-    pub token_lists: Vec<Vec<u8>>,
-}
-
-/// Mutable session state cloned from [`FormatImage`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SessionState {
-    /// Macro definitions active in this session.
-    pub macros: Vec<MacroDefinition>,
-    /// Packages loaded into this session.
-    pub packages: Vec<FormatPackage>,
-    /// Resources captured for this session.
-    pub resources: Vec<FormatResource>,
-    /// Opaque engine state bytes for this session.
-    pub opaque_engine_state: Vec<u8>,
-    /// Register values active in this session.
-    pub registers: RegisterSnapshot,
-}
-
-impl SessionState {
-    /// Add or replace a macro in the session state.
-    pub fn define_macro(&mut self, name: impl Into<String>, replacement: impl Into<Vec<u8>>) {
-        let name = name.into();
-        let replacement = replacement.into();
-        if let Some(existing) = self
-            .macros
-            .iter_mut()
-            .find(|macro_def| macro_def.name == name)
-        {
-            existing.replacement = replacement;
-            return;
-        }
-
-        self.macros.push(MacroDefinition { name, replacement });
-    }
-
-    /// Look up a macro definition by control sequence name.
-    #[must_use]
-    pub fn macro_definition(&self, name: &str) -> Option<&MacroDefinition> {
-        self.macros.iter().find(|macro_def| macro_def.name == name)
-    }
-
-    /// Look up a loaded package by name.
-    #[must_use]
-    pub fn package(&self, name: &str) -> Option<&FormatPackage> {
-        self.packages.iter().find(|package| package.name == name)
-    }
-
-    /// Look up a captured resource by canonical name.
-    #[must_use]
-    pub fn resource(&self, name: &str) -> Option<&FormatResource> {
-        self.resources.iter().find(|resource| resource.name == name)
+impl fmt::Debug for Format {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Format")
+            .field("native_fonts", &self.fonts.len())
+            .finish_non_exhaustive()
     }
 }
 
-/// Format initialization failure.
+/// Why bytes are not a usable format.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum FormatInitError {
-    /// A requested TeX input could not be loaded.
-    TexInput {
-        /// Name of the TeX input file.
-        name: String,
-        /// Description of the load failure.
-        message: String,
+pub enum FormatError {
+    /// The bytes do not start with the packaged format header.
+    NotAFormat,
+    /// The container was written by a version of this crate with another layout.
+    Version {
+        /// Version byte found.
+        found: u8,
     },
-    /// A requested package could not be loaded.
-    Package {
-        /// Name of the package resource file.
-        name: String,
-        /// Description of the load failure.
+    /// The payload does not inflate or its parts do not add up.
+    Corrupt,
+    /// The format image was dumped by another engine build or on a big endian target, or fails validation.
+    Image {
+        /// Why the image was refused.
         message: String,
     },
 }
 
-fn package_resource_name(name: &str) -> String {
-    if name.ends_with(".sty") {
-        name.to_string()
-    } else {
-        format!("{name}.sty")
+impl fmt::Display for FormatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAFormat => f.write_str("not a packaged mathtex format"),
+            Self::Version { found } => {
+                write!(
+                    f,
+                    "packaged format version {found}, this build reads {VERSION}"
+                )
+            }
+            Self::Corrupt => f.write_str("packaged format is corrupt"),
+            Self::Image { message } => write!(f, "{message}, bake the format again"),
+        }
     }
 }
 
-/// Opaque initialized state snapshot.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+impl std::error::Error for FormatError {}
+
+/// Bakes a packaged format: INITEX runs an optional kernel file, then the preamble, then dumps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct FormatBuilder {
+    preamble: String,
+    kernel: Option<String>,
+}
+
+impl FormatBuilder {
+    /// A format whose INITEX run reads `preamble`, which should not `\dump` itself.
+    pub fn new(preamble: impl Into<String>) -> Self {
+        Self {
+            preamble: preamble.into(),
+            kernel: None,
+        }
+    }
+
+    /// Runs `file`, such as `latex.ltx`, through INITEX to its own `\dump` before the preamble.
+    pub fn kernel(mut self, file: impl Into<String>) -> Self {
+        self.kernel = Some(file.into());
+        self
+    }
+
+    /// Runs the kernel and preamble, defines `\hostbox` if still undefined, and returns the packaged format.
+    pub fn build(
+        self,
+        resources: &impl ResourceProvider,
+        fonts: &impl FontLoader,
+    ) -> Result<Vec<u8>, BuildError> {
+        let mut table = FontTable::default();
+        let empty = pe::PortableFormatImage::empty();
+        let mut engine = pe::PortableTexEngine::from_format(&empty, ProviderFiles(resources))
+            .with_font_platform(table.platform(fonts));
+        if !engine.initialize_format_state() {
+            return Err(BuildError::Initialization);
+        }
+        if let Some(kernel) = &self.kernel {
+            let bytes = resources
+                .read(kernel, ResourceKind::TexInput)
+                .map_err(|error| BuildError::Kernel {
+                    name: kernel.clone(),
+                    error,
+                })?
+                .bytes;
+            run_input(&mut engine, kernel, bytes)?;
+        }
+        // The newline keeps a trailing comment in the preamble from swallowing the definitions after it.
+        let preamble = format!("{}\n{HOST_BOX_DEFINITION}\\dump", self.preamble);
+        run_input(&mut engine, "preamble", preamble.into_bytes())?;
+        if !engine.finalize_trie() {
+            return Err(BuildError::Trie);
+        }
+        let image = engine.into_format().to_bytes();
+        Ok(pack(&image, &table.snapshot()))
+    }
+}
+
+/// Runs one INITEX input to its `\dump` or `\end`.
+fn run_input(
+    engine: &mut pe::PortableTexEngine<'_>,
+    input: &str,
+    bytes: Vec<u8>,
+) -> Result<(), BuildError> {
+    if engine.begin_primary_input(input, bytes) && engine.run_format_initialization() {
+        return Ok(());
+    }
+    Err(match engine.last_error() {
+        Some(error) => BuildError::Tex {
+            input: input.into(),
+            message: error.message.clone(),
+            line: error.line,
+        },
+        None => BuildError::Aborted {
+            input: input.into(),
+            status: engine.last_abort_status(),
+        },
+    })
+}
+
+/// Why a format could not be baked.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum FormatState {
-    /// Empty state used for bootstrapping and tests.
-    #[default]
-    Empty,
-    /// Opaque engine bytes, reserved for a future structured snapshot.
-    Snapshot(Vec<u8>),
-    /// Structured snapshot used to initialize each session state.
-    Structured(FormatSnapshot),
+pub enum BuildError {
+    /// INITEX could not initialize its tables.
+    Initialization,
+    /// The kernel file could not be read.
+    Kernel {
+        /// The kernel's name.
+        name: String,
+        /// Why it could not be read.
+        error: ResourceError,
+    },
+    /// TeX reported an error, which ends a format build.
+    Tex {
+        /// The kernel's name or `preamble`.
+        input: String,
+        /// TeX's error message.
+        message: String,
+        /// Line of the innermost file TeX was reading.
+        line: i32,
+    },
+    /// The run stopped without an error message.
+    Aborted {
+        /// The kernel's name or `preamble`.
+        input: String,
+        /// The engine's exit status, when it set one.
+        status: Option<i32>,
+    },
+    /// The hyphenation patterns overflow the trie.
+    Trie,
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Initialization => f.write_str("INITEX initialization failed"),
+            Self::Kernel { name, error } => write!(f, "cannot read the kernel {name}: {error}"),
+            Self::Tex {
+                input,
+                message,
+                line,
+            } => write!(f, "{input}, line {line}: {message}"),
+            Self::Aborted { input, status } => match status {
+                Some(status) => write!(f, "{input}: TeX stopped with status {status}"),
+                None => write!(f, "{input}: TeX stopped"),
+            },
+            Self::Trie => f.write_str("the hyphenation patterns overflow the trie"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+/// The container: magic, version, compression, payload length, then the payload, deflated.
+fn pack(image: &[u8], fonts: &[(pe::PortableFontHandle, String, i32)]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(image.len() + 64);
+    payload.extend_from_slice(&(image.len() as u64).to_le_bytes());
+    payload.extend_from_slice(image);
+    payload.extend_from_slice(&(fonts.len() as u32).to_le_bytes());
+    for (handle, spec, size) in fonts {
+        payload.extend_from_slice(&(*handle as u64).to_le_bytes());
+        payload.extend_from_slice(&size.to_le_bytes());
+        payload.extend_from_slice(&(spec.len() as u32).to_le_bytes());
+        payload.extend_from_slice(spec.as_bytes());
+    }
+    let compressed = miniz_oxide::deflate::compress_to_vec(&payload, DEFLATE_LEVEL);
+    let mut out = Vec::with_capacity(compressed.len() + 16);
+    out.extend_from_slice(MAGIC);
+    out.push(VERSION);
+    out.push(DEFLATE);
+    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    out.extend_from_slice(&compressed);
+    out
+}
+
+/// Cursor over container bytes whose reads fail instead of running past the end.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, len: usize) -> Result<&'a [u8], FormatError> {
+        let end = self.at.checked_add(len).ok_or(FormatError::Corrupt)?;
+        let slice = self.bytes.get(self.at..end).ok_or(FormatError::Corrupt)?;
+        self.at = end;
+        Ok(slice)
+    }
+
+    fn u32(&mut self) -> Result<u32, FormatError> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn u64(&mut self) -> Result<u64, FormatError> {
+        let mut word = [0; 8];
+        word.copy_from_slice(self.take(8)?);
+        Ok(u64::from_le_bytes(word))
+    }
+
+    fn len(&mut self) -> Result<usize, FormatError> {
+        usize::try_from(self.u64()?).map_err(|_| FormatError::Corrupt)
+    }
+}
+
+/// Splits a container into its format image bytes and native font table.
+fn unpack(bytes: &[u8]) -> Result<(Vec<u8>, NativeFontTable), FormatError> {
+    if bytes.get(..MAGIC.len()) != Some(&MAGIC[..]) {
+        return Err(FormatError::NotAFormat);
+    }
+    let mut header = Reader {
+        bytes,
+        at: MAGIC.len(),
+    };
+    let version = header.take(1)?[0];
+    if version != VERSION {
+        return Err(FormatError::Version { found: version });
+    }
+    let compression = header.take(1)?[0];
+    let payload_len = header.len()?;
+    let body = &bytes[header.at..];
+    let payload = match compression {
+        DEFLATE => miniz_oxide::inflate::decompress_to_vec_with_limit(body, payload_len)
+            .map_err(|_| FormatError::Corrupt)?,
+        STORED => body.to_vec(),
+        _ => return Err(FormatError::Corrupt),
+    };
+    if payload.len() != payload_len {
+        return Err(FormatError::Corrupt);
+    }
+    let mut payload = Reader {
+        bytes: &payload,
+        at: 0,
+    };
+    let image_len = payload.len()?;
+    let image = payload.take(image_len)?.to_vec();
+    let count = payload.u32()? as usize;
+    let mut fonts = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        let handle = usize::try_from(payload.u64()?).map_err(|_| FormatError::Corrupt)?;
+        let size = payload.u32()? as i32;
+        let spec_len = payload.u32()? as usize;
+        let spec = std::str::from_utf8(payload.take(spec_len)?)
+            .map_err(|_| FormatError::Corrupt)?
+            .to_string();
+        fonts.push((handle, spec, size));
+    }
+    if payload.at != payload.bytes.len() {
+        return Err(FormatError::Corrupt);
+    }
+    Ok((image, fonts))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::ProfileId;
-    use crate::{InMemoryResourceProvider, ResourceKind};
+    use crate::resource::InMemoryResourceProvider;
+    use mathtex_font::InMemoryFontLoader;
 
-    #[test]
-    fn format_image_instantiates_mutable_session_state() {
-        let snapshot = FormatSnapshot {
-            macros: alloc::vec![MacroDefinition {
-                name: "text".into(),
-                replacement: b"text macro".to_vec(),
-            }],
-            packages: alloc::vec![FormatPackage {
-                name: "latex".into(),
-                version: Some("2026".into()),
-            }],
-            resources: alloc::vec![FormatResource {
-                name: "plain.tex".into(),
-                kind: FormatResourceKind::TexInput,
-                bytes: b"plain".to_vec(),
-            }],
-            opaque_engine_state: b"engine".to_vec(),
-            registers: RegisterSnapshot {
-                counts: alloc::vec![1, 2],
-                dimensions: alloc::vec![3],
-                token_lists: alloc::vec![b"tokens".to_vec()],
-            },
-        };
-        let format = FormatImage::with_snapshot("latex", ProfileId("tex"), snapshot);
-
-        let mut session = format.instantiate_session_state();
-        session.define_macro("text", b"changed".to_vec());
-        session.define_macro("frac", b"fraction".to_vec());
-
-        assert_eq!(
-            session
-                .macro_definition("text")
-                .expect("text macro")
-                .replacement,
-            b"changed".to_vec()
-        );
-        assert_eq!(
-            session
-                .macro_definition("frac")
-                .expect("frac macro")
-                .replacement,
-            b"fraction".to_vec()
-        );
-        assert_eq!(
-            session.resource("plain.tex").expect("plain resource").bytes,
-            b"plain".to_vec()
-        );
-        assert_eq!(session.registers.counts, alloc::vec![1, 2]);
-
-        match &format.state {
-            FormatState::Structured(snapshot) => {
-                assert_eq!(snapshot.macros[0].replacement, b"text macro".to_vec());
-                assert_eq!(snapshot.resources[0].bytes, b"plain".to_vec());
-                assert_eq!(snapshot.registers.counts, alloc::vec![1, 2]);
-            }
-            other => panic!("unexpected format state: {other:?}"),
-        }
+    fn plain_format() -> Vec<u8> {
+        FormatBuilder::new(r"\catcode`\{=1 \catcode`\}=2 \catcode`\$=3 \def\hello{hi}")
+            .build(&InMemoryResourceProvider::new(), &InMemoryFontLoader::new())
+            .expect("a catcode preamble bakes")
     }
 
     #[test]
-    fn initializer_preloads_packages_through_resource_provider() {
-        let resources = InMemoryResourceProvider::new()
-            .with_resource("latex.ltx.sty", ResourceKind::Package, b"latex")
-            .with_resource("amsmath.sty", ResourceKind::Package, b"ams");
+    fn containers_round_trip_their_image_and_font_table() {
+        let fonts = vec![(3, "[latinmodern-math.otf]:script=math".to_string(), 655_360)];
+        let packed = pack(b"image", &fonts);
+        assert_eq!(unpack(&packed), Ok((b"image".to_vec(), fonts)));
+    }
 
-        let format = FormatImage::initializer("latex+amsmath", ProfileId("tex"))
-            .preload_package("latex.ltx.sty")
-            .preload_package("amsmath")
-            .macro_definition("text", b"text macro")
-            .opaque_engine_state(b"seed".to_vec())
-            .build(&resources)
-            .expect("format should initialize");
-
-        assert_eq!(format.packages.len(), 2);
-        assert_eq!(format.packages[1].name, "amsmath");
-        let session = format.instantiate_session_state();
-        assert!(session.package("amsmath").is_some());
-        assert!(session.resource("amsmath.sty").is_some());
+    #[test]
+    fn foreign_and_damaged_bytes_are_refused() {
+        let packed = plain_format();
+        assert!(Format::from_owned(packed.clone()).is_ok());
         assert_eq!(
-            session
-                .macro_definition("text")
-                .expect("text macro")
-                .replacement,
-            b"text macro".to_vec()
+            Format::from_owned(vec![1, 2, 3]).err(),
+            Some(FormatError::NotAFormat)
         );
-        assert_eq!(session.opaque_engine_state, b"seedlatexams".to_vec());
-    }
-
-    #[test]
-    fn initializer_reports_missing_preloaded_package() {
-        let resources = InMemoryResourceProvider::new();
-
-        let error = FormatImage::initializer("latex+missing", ProfileId("tex"))
-            .preload_package("missing")
-            .build(&resources)
-            .expect_err("missing package should fail initialization");
-
-        match error {
-            FormatInitError::TexInput { .. } => panic!("unexpected TeX input error"),
-            FormatInitError::Package { name, message } => {
-                assert_eq!(name, "missing.sty");
-                assert!(message.contains("NotFound"));
-            }
-        }
-    }
-
-    #[test]
-    fn initializer_preloads_tex_input_resources() {
-        let resources = InMemoryResourceProvider::new().with_resource(
-            "plain.tex",
-            ResourceKind::TexInput,
-            br"\def\plainchar{A}".to_vec(),
+        let mut other_version = packed.clone();
+        other_version[MAGIC.len()] = VERSION + 1;
+        assert_eq!(
+            Format::from_owned(other_version).err(),
+            Some(FormatError::Version { found: VERSION + 1 })
         );
-
-        let format = FormatImage::initializer("plain", ProfileId("tex"))
-            .preload_tex_input("plain.tex")
-            .build(&resources)
-            .expect("format should preload TeX input bytes");
-
-        let snapshot = match format.state {
-            FormatState::Structured(snapshot) => snapshot,
-            other => panic!("unexpected format state: {other:?}"),
-        };
-        assert_eq!(snapshot.resources.len(), 1);
-        assert_eq!(snapshot.resources[0].name, "plain.tex");
-        assert_eq!(snapshot.resources[0].kind, FormatResourceKind::TexInput);
-        assert_eq!(snapshot.resources[0].bytes, br"\def\plainchar{A}".to_vec());
+        let truncated = packed[..packed.len() / 2].to_vec();
+        assert_eq!(
+            Format::from_owned(truncated).err(),
+            Some(FormatError::Corrupt)
+        );
+        let stale = pack(b"not an image", &[]);
+        assert!(matches!(
+            Format::from_owned(stale),
+            Err(FormatError::Image { .. })
+        ));
     }
 
     #[test]
-    fn real_format_constructors_preload_engine_entrypoints() {
-        let resources = InMemoryResourceProvider::new()
-            .with_resource("plain.tex", ResourceKind::TexInput, br"\dump".to_vec())
-            .with_resource("latex.ltx", ResourceKind::TexInput, br"\dump".to_vec());
-
-        let plain = FormatImage::plain(ProfileId("tex"))
-            .build(&resources)
-            .expect("plain format entrypoint should resolve");
-        let latex = FormatImage::latex(ProfileId("tex"))
-            .build(&resources)
-            .expect("latex format entrypoint should resolve");
-
-        assert_eq!(plain.id, "plain");
-        assert_eq!(latex.id, "latex");
-
-        let plain_snapshot = match plain.state {
-            FormatState::Structured(snapshot) => snapshot,
-            other => panic!("unexpected plain format state: {other:?}"),
-        };
-        let latex_snapshot = match latex.state {
-            FormatState::Structured(snapshot) => snapshot,
-            other => panic!("unexpected latex format state: {other:?}"),
-        };
-
-        assert_eq!(plain_snapshot.resources[0].name, "plain.tex");
-        assert_eq!(latex_snapshot.resources[0].name, "latex.ltx");
+    fn a_preamble_error_names_its_input_and_line() {
+        let error = FormatBuilder::new("\\relax\n\\undefinedmacro")
+            .build(&InMemoryResourceProvider::new(), &InMemoryFontLoader::new())
+            .expect_err("an undefined control sequence fails the build");
+        assert!(
+            matches!(&error, BuildError::Tex { input, line: 2, .. } if input == "preamble"),
+            "{error:?}"
+        );
+        let error = FormatBuilder::new("")
+            .kernel("missing.ltx")
+            .build(&InMemoryResourceProvider::new(), &InMemoryFontLoader::new())
+            .expect_err("a missing kernel fails the build");
+        assert!(matches!(error, BuildError::Kernel { .. }), "{error:?}");
     }
 }

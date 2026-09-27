@@ -1,55 +1,61 @@
 # mathtex
 
-mathtex is a TeX layout engine written in Rust. It typesets LaTeX math into a renderer neutral layout IR. It runs natively and on `wasm32-unknown-unknown`, so a browser page can typeset math locally with no TeX install and no server. A packaged format file stands in for the TeX distribution at render time.
+`mathtex` runs the XeTeX engine itself, translated to Rust, and hands you the finished layout as an intermediate representation (IR).
 
-The engine core is translated from the TeX, eTeX and XeTeX sources through Web2C and C2Rust, then reworked by an AST patcher that routes host access behind traits and adds source span tracking. The translated core is unsafe Rust. Hand authored crates around it own sessions, formats, resources, fonts and rendering.
+- **TeX's own layout.** All math comes straight from XeTeX's own algorithms.
+- **Runs anywhere Rust runs.** Native and `wasm32-unknown-unknown`, with no TeX install.
+- **Made for editors.** Every glyph maps back to the input that produced it.
+- **Safe with user input.** Each formula runs sandboxed from a fresh copy of the format, with a work budget, no file access and structured errors.
+- **Fast.** A few milliseconds per formula in a release build.
 
-## Layout
+## Quick start
 
+Bake LaTeX code into formats, then typeset as many formulas as it is needed. The following code displays a basic use of the library:
+
+```rust
+use mathtex_engine::{
+    Format, FormatBuilder, MathMode, NoHostBoxes, Options, ResourceFontLoader, TexmfResources,
+    Typesetter,
+};
+
+let texmf = TexmfResources::discover()?;
+let fonts = ResourceFontLoader::new(&texmf);
+let bytes = FormatBuilder::new(
+    r"\documentclass{article}\usepackage{amsmath}\usepackage{unicode-math}\setmathfont{latinmodern-math.otf}\begin{document}",
+)
+.kernel("latex.ltx")
+.build(&texmf, &fonts)?;
+
+let mut typesetter = Typesetter::new(Format::from_owned(bytes)?, fonts, Options::default())?;
+let typeset = typesetter.typeset(r"\frac{a}{b}+\sqrt{x}", MathMode::Display, &NoHostBoxes)?;
+let svg = mathtex_svg::render(&typeset.fragment, &outlines, &mathtex_svg::SvgOptions::default());
 ```
-crates/mathtex-engine      profiles, format building and serialization, resource
-                           and font systems, fragment sessions, IR lowering
-crates/mathtex-ir          layout IR, including source spans
-crates/mathtex-render      backend traits
-crates/mathtex-font        font loading and shaping over rustybuzz and ttf-parser
-crates/mathtex-svg         SVG backend with deduplicated glyph outlines
-crates/mathtex-wasm        wasm bindings, build_format and a cached Session renderer
-crates/mathtex-svg-cli     native binary, one expression to SVG via a local TeXLive tree
-crates/mathtex             facade crate
-generated/portable-engine  machine generated engine core, never edited by hand
-tools/web2c-import         the patcher that produces the generated crate
-tools/build-format         dumps the packaged format used by the web page and tests
-tools/bench                speed comparison against MathJax in Node
-web                        browser demo, served from Cloudflare Pages
-test/e2e.mjs               end to end render test in Node
-```
 
-## Build and test
+Ship the format with your app and parse them with `Format::from_static`.
+
+> Note: A format belongs to the engine build that baked it, and any other build will be refused to load.
+
+## Development
 
 ```sh
+tools/fetch-test-fixtures.sh
 cargo test --workspace
 cargo run -p mathtex-svg-cli -- 'x^2+y' out.svg
 ```
 
-The CLI and some engine tests read a local TeXLive tree and fixtures under `vendor`. Set `MATHTEX_TEXMF_ROOT` to a `texmf-dist` directory when the default locations do not match your install.
+Tests read Computer Modern TFMs and sample fonts from a small sparse clone of the pinned `texlive-source` commit, which the fetch script creates in the gitignored `cache/` directory. The LaTeX, unicode-math and oracle tests also need an installed TeX Live, found through `MATHTEX_TEXMF_ROOT` or `kpsewhich`. Missing sources skip with a notice, and `MATHTEX_REQUIRE_FIXTURES=1` or `MATHTEX_REQUIRE_TEXLIVE=1` make them fail instead.
 
-## Web demo
+### Web demo
 
-```sh
-wasm-pack build crates/mathtex-wasm --target web    --out-dir pkg-web  --release
-wasm-pack build crates/mathtex-wasm --target nodejs --out-dir pkg-node --release
-cp crates/mathtex-wasm/pkg-web/mathtex_wasm.js crates/mathtex-wasm/pkg-web/mathtex_wasm_bg.wasm web/pkg/
-node tools/build-format/dump.mjs
-node test/e2e.mjs
-cd web && python3 -m http.server 8000
-```
+There is a web demo in `web/`. It can be built with `wasm-pack build crates/mathtex-wasm --target web`. To dump its format, run `node tools/build-format/dump.mjs`. It can be end-to-end tested with `node test/e2e.mjs`.
 
-The format must be dumped by a wasm32 build, which is why `dump.mjs` runs the Node wasm module. Deploys go out with `npx wrangler pages deploy web --project-name mathtex-demo --branch main`. The editor page under `web` loads a wasm module built from the separate mathtex editor repository.
+### Regenerating the engine
 
-## Regenerating the engine
-
-`generated/portable-engine` is produced entirely by tooling. After changing the patcher, run `tools/patch-translated-engine.sh`. A full bootstrap from upstream sources runs through `tools/bootstrap-texlive-web2c-c2rust.sh` and needs a clone of `texlive-source` under `vendor`, the `tie` and `tangle` tools, `c2rust` and nightly Rust.
+- `generated/portable-engine` is produced entirely by `tools/web2c-import` from the XeTeX sources.
+- `tools/bootstrap-texlive-web2c-c2rust.sh` rebuilds those inputs from a `texlive-source` clone.
+- `tools/patch-translated-engine.sh` regenerates the engine after a change to the patcher or `runtime/prelude.rs.in`.
+- `tools/check-regen.sh` fails when the committed engine differs from a fresh regeneration.
 
 ## License
 
-`MIT OR Apache-2.0` for the hand authored crates. The generated engine core derives from the TeX family sources. Their license texts are collected into `generated/portable-engine/THIRD-PARTY-LICENSES.json` by `tools/generate_third_party_licenses.py`.
+The hand written crates are `MIT OR Apache-2.0`. The generated engine derives from the TeX, eTeX and XeTeX sources, whose license texts are collected in `generated/portable-engine/THIRD-PARTY-LICENSES.json`.

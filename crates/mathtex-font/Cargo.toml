@@ -1,27 +1,26 @@
 [package]
 name = "mathtex-font"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Font loading, shaping, and OpenType math access for mathtex, over rustybuzz and ttf-parser"
-
-[features]
-default = ["std"]
-std = ["mathtex-ir/std", "rustybuzz/std", "ttf-parser/std"]
+description = "XeTeX font specs, host font loading, and OpenType metrics and math access for mathtex"
+readme = "../../README.md"
 
 [dependencies]
-mathtex-ir = { version = "0.1.0", path = "../mathtex-ir", default-features = false }
-once_cell = { version = "1.21.4", default-features = false, features = ["race", "alloc"] }
-rustybuzz = { version = "0.20.1", default-features = false }
+mathtex-ir = { version = "0.2.0", path = "../mathtex-ir" }
+rustybuzz = "0.20.1"
 self_cell = "1"
 ttf-parser = { version = "0.25.1", default-features = false, features = [
+    "std",
     "opentype-layout",
     "apple-layout",
     "variable-fonts",
     "glyph-names",
-    "no-std-float",
 ] }
+
+[dev-dependencies]
+mathtex-test-fixtures = { path = "../../tools/test-fixtures" }
 
 [lints]
 workspace = true

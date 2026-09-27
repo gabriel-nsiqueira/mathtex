@@ -1,14 +1,13 @@
 //! Function and global extraction from C2Rust translated TeX sources.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::model::{PatchError, RawFunction};
+use crate::model::{read_file, PatchError, RawFunction};
 use crate::transform::patch_c_types;
 
 pub(crate) fn extract_functions(path: &Path) -> Result<Vec<RawFunction>, PatchError> {
-    let input = fs::read_to_string(path)?;
+    let input = read_file(path)?;
     let lines = input.lines().collect::<Vec<_>>();
     let mut functions = Vec::new();
     let mut index = 0;
@@ -71,15 +70,15 @@ pub(crate) fn extract_functions(path: &Path) -> Result<Vec<RawFunction>, PatchEr
     Ok(functions)
 }
 
-
-pub(crate) fn extract_functions_from_paths(paths: &[PathBuf]) -> Result<Vec<RawFunction>, PatchError> {
+pub(crate) fn extract_functions_from_paths(
+    paths: &[PathBuf],
+) -> Result<Vec<RawFunction>, PatchError> {
     let mut functions = Vec::new();
     for path in paths {
         functions.extend(extract_functions(path)?);
     }
     Ok(functions)
 }
-
 
 pub(crate) fn function_name(signature: &str) -> Option<String> {
     let rest = signature.strip_prefix("pub unsafe extern \"C\" fn ")?;
@@ -89,11 +88,10 @@ pub(crate) fn function_name(signature: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-
 pub(crate) fn extract_globals(paths: &[PathBuf]) -> Result<BTreeMap<String, String>, PatchError> {
     let mut globals = BTreeMap::new();
     for path in paths {
-        let input = fs::read_to_string(path)?;
+        let input = read_file(path)?;
         for line in input.lines() {
             let line = line.trim();
             let Some(rest) = line.strip_prefix("static mut ") else {

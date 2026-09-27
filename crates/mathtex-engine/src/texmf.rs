@@ -1,209 +1,263 @@
-//! Native filesystem [`ResourceProvider`] over a TeXLive tree using `ls-R` and texmf.cnf priority.
-
-#![cfg(feature = "std")]
-
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::resource::{Resource, ResourceError, ResourceKind, ResourceProvider, ResourceRequest};
 
-/// search format, mapping each resource kind to its ordered `texmf.cnf` prefixes.
+/// Environment variable naming a `texmf-dist` root, read by [`TexmfResources::discover`].
+pub const TEXMF_ROOT_ENV: &str = "MATHTEX_TEXMF_ROOT";
+
+/// Search tree of a file, each with its `texmf.cnf` path prefixes in priority order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Fmt {
-    /// TeX inputs: `.tex`/`.sty`/`.cls`/`.def`/`.cfg`/`.fd`/`.ltx`/`.clo`.
+enum SearchPath {
     Tex,
-    /// TeX font metrics: `.tfm`.
     Tfm,
-    /// OpenType/TrueType font programs.
     OpenType,
-    /// Font encoding files: `.enc`.
     Enc,
-    /// Font map files: `.map`.
     Map,
 }
 
-impl Fmt {
-    /// Ordered relative directory prefixes, highest priority first, matching each prefix subtree.
+impl SearchPath {
+    /// Relative directory prefixes, highest priority first, each matching its whole subtree.
     fn prefixes(self) -> &'static [&'static str] {
         match self {
-            // Search entries for TeX input files.
-            Fmt::Tex => &[
+            // XeLaTeX's TEXINPUTS order, the whole tex tree comes after the narrower roots.
+            Self::Tex => &[
                 "tex/xelatex",
                 "tex/latex",
                 "tex/xetex",
                 "tex/generic",
                 "tex",
             ],
-            // Search entries for TeX font metrics.
-            Fmt::Tfm => &["fonts/tfm"],
-            // Search entries for font programs.
-            Fmt::OpenType => &["fonts/opentype", "fonts/truetype"],
-            // Search entries for font encodings.
-            Fmt::Enc => &["fonts/enc"],
-            // Search entries for font maps.
-            Fmt::Map => &["fonts/map"],
+            Self::Tfm => &["fonts/tfm"],
+            Self::OpenType => &["fonts/opentype", "fonts/truetype"],
+            Self::Enc => &["fonts/enc"],
+            Self::Map => &["fonts/map"],
+        }
+    }
+
+    /// The tree a request searches, font kinds by extension and other kinds refined by extension.
+    fn for_request(kind: ResourceKind, filename: &str) -> Self {
+        let lower = filename.to_ascii_lowercase();
+        let is_font_program = [".otf", ".ttf", ".otc"]
+            .iter()
+            .any(|ext| lower.ends_with(ext));
+        match kind {
+            ResourceKind::Encoding => Self::Enc,
+            ResourceKind::Map => Self::Map,
+            ResourceKind::Font if is_font_program => Self::OpenType,
+            ResourceKind::Font => Self::Tfm,
+            _ if lower.ends_with(".enc") => Self::Enc,
+            _ if lower.ends_with(".map") => Self::Map,
+            _ if lower.ends_with(".tfm") => Self::Tfm,
+            _ if is_font_program => Self::OpenType,
+            _ => Self::Tex,
         }
     }
 }
 
-/// Resource provider backed by a TeXMF tree root and its `ls-R` filename index.
-#[derive(Debug)]
+/// Resource provider over a TeX Live `texmf-dist` tree by exact file name, through its `ls-R` index.
+#[derive(Clone, Debug)]
 pub struct TexmfResources {
     root: PathBuf,
-    /// Basename to relative dirs containing it, in `ls-R` order.
-    index: HashMap<String, Vec<String>>,
+    /// Basename to the relative directories holding it, in `ls-R` order.
+    index: Arc<HashMap<String, Vec<String>>>,
 }
 
 impl TexmfResources {
-    /// Returns `None` when `ls-R` is absent or empty, run `mktexlsr` to generate it.
-    #[must_use]
-    pub fn from_root(root: impl Into<PathBuf>) -> Option<Self> {
+    /// Reads the `ls-R` index of `root`, a `texmf-dist` directory.
+    pub fn from_root(root: impl Into<PathBuf>) -> Result<Self, TexmfError> {
         let root = root.into();
-        let bytes = std::fs::read(root.join("ls-R")).ok()?;
+        let index_path = root.join("ls-R");
+        let bytes = std::fs::read(&index_path).map_err(|error| TexmfError::Index {
+            path: index_path.clone(),
+            message: error.to_string(),
+        })?;
         let text = String::from_utf8_lossy(&bytes);
-
         let mut index: HashMap<String, Vec<String>> = HashMap::new();
-        let mut cur_dir = String::new();
+        let mut dir = String::new();
         for line in text.lines() {
             let line = line.trim_end();
             if line.is_empty() || line.starts_with('%') {
                 continue;
             }
-            if let Some(dir) = line.strip_suffix(':') {
-                cur_dir = dir.strip_prefix("./").unwrap_or(dir).to_string();
+            if let Some(header) = line.strip_suffix(':') {
+                dir = header.strip_prefix("./").unwrap_or(header).to_string();
                 continue;
             }
-            index
-                .entry(line.to_string())
-                .or_default()
-                .push(cur_dir.clone());
+            index.entry(line.to_string()).or_default().push(dir.clone());
         }
-
         if index.is_empty() {
-            return None;
+            return Err(TexmfError::EmptyIndex { path: index_path });
         }
-        Some(Self { root, index })
+        Ok(Self {
+            root,
+            index: Arc::new(index),
+        })
     }
 
-    /// Returns the filesystem root of the TeXMF tree.
+    /// Finds the tree through `MATHTEX_TEXMF_ROOT`, else `kpsewhich -var-value TEXMFDIST`.
+    pub fn discover() -> Result<Self, TexmfError> {
+        if let Some(root) = std::env::var_os(TEXMF_ROOT_ENV) {
+            return Self::from_root(root);
+        }
+        let output = std::process::Command::new("kpsewhich")
+            .args(["-var-value", "TEXMFDIST"])
+            .output()
+            .map_err(|error| TexmfError::NoRoot {
+                message: format!("{TEXMF_ROOT_ENV} is unset and kpsewhich did not run: {error}"),
+            })?;
+        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !output.status.success() || root.is_empty() {
+            return Err(TexmfError::NoRoot {
+                message: format!("{TEXMF_ROOT_ENV} is unset and kpsewhich knows no TEXMFDIST"),
+            });
+        }
+        Self::from_root(root)
+    }
+
+    /// The tree's root directory.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Returns the number of basename entries in the `ls-R` index.
+    /// Number of distinct file names in the index.
     #[must_use]
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
-    /// Returns true when the `ls-R` index contains no entries.
+    /// Whether the index holds no file names, never true for a provider that was built.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }
 
-    /// Normalizes an engine resource name to the basename used as a lookup key.
-    fn normalize(name: &str) -> String {
-        let mut n = name.trim();
-        loop {
-            if let Some(s) = n.strip_prefix("./") {
-                n = s;
-            } else if let Some(s) = n.strip_prefix("[]") {
-                n = s;
-            } else if let Some(s) = n.strip_prefix(':') {
-                n = s;
-            } else {
-                break;
-            }
-        }
-        let n = n.trim_matches(|c| c == '[' || c == ']' || c == '"' || c == '\'');
-        n.rsplit(['/', '\\']).next().unwrap_or(n).to_string()
-    }
-
-    /// Maps a resource kind and filename extension to the texmf.cnf search format.
-    fn format_for(kind: ResourceKind, filename: &str) -> Fmt {
-        let lower = filename.to_ascii_lowercase();
-        match kind {
-            ResourceKind::Encoding => Fmt::Enc,
-            ResourceKind::Map => Fmt::Map,
-            ResourceKind::Font => {
-                if lower.ends_with(".otf") || lower.ends_with(".ttf") || lower.ends_with(".otc") {
-                    Fmt::OpenType
-                } else {
-                    Fmt::Tfm
-                }
-            }
-            // Use the tex tree by default, refining by extension for stray font assets.
-            _ => {
-                if lower.ends_with(".enc") {
-                    Fmt::Enc
-                } else if lower.ends_with(".map") {
-                    Fmt::Map
-                } else if lower.ends_with(".tfm") {
-                    Fmt::Tfm
-                } else if lower.ends_with(".otf") || lower.ends_with(".ttf") {
-                    Fmt::OpenType
-                } else {
-                    Fmt::Tex
-                }
-            }
-        }
-    }
-
-    /// Returns the path for the first search prefix subtree containing the filename.
-    fn resolve(&self, filename: &str, fmt: Fmt) -> Option<PathBuf> {
-        let dirs = self.index.get(filename)?;
-        for prefix in fmt.prefixes() {
+    /// The file a request names, found in the highest priority directory of its search path.
+    #[must_use]
+    pub fn resolve(&self, request: &ResourceRequest) -> Option<PathBuf> {
+        let name = basename(&request.canonical_name());
+        let dirs = self.index.get(&name)?;
+        for prefix in SearchPath::for_request(request.kind, &name).prefixes() {
             for dir in dirs {
-                if dir == prefix || dir.strip_prefix(prefix).is_some_and(|r| r.starts_with('/')) {
-                    return Some(self.root.join(dir).join(filename));
+                let under = dir
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+                if under {
+                    return Some(self.root.join(dir).join(&name));
                 }
             }
         }
         None
     }
+}
 
-    /// Candidate filenames for a request, including kind suffixes when no extension is present.
-    fn candidates(request: &ResourceRequest) -> Vec<String> {
-        let base = Self::normalize(&request.canonical_name());
-        let mut out = vec![base.clone()];
-        if Path::new(&base).extension().is_none() {
-            let exts: &[&str] = match request.kind {
-                ResourceKind::Package => &[".sty", ".tex", ".def", ".ltx"],
-                ResourceKind::Class => &[".cls"],
-                ResourceKind::FontDefinition => &[".fd"],
-                ResourceKind::PackageSupport => &[".def", ".cfg", ".ldf", ".clo", ".sty", ".tex"],
-                ResourceKind::Config => &[".cfg", ".cnf", ".tex"],
-                ResourceKind::Encoding => &[".enc"],
-                ResourceKind::Map => &[".map"],
-                ResourceKind::Font => &[".tfm", ".otf", ".ttf"],
-                ResourceKind::TexInput => &[".tex", ".ltx", ".def", ".sty", ".cfg", ".fd"],
-                _ => &[
-                    ".tex", ".sty", ".def", ".cfg", ".ltx", ".fd", ".cls", ".enc",
-                ],
-            };
-            for e in exts {
-                out.push(format!("{base}{e}"));
-            }
+/// The file name TeX means, without `./`, XeTeX's `[]` and `:` prefixes, brackets, quotes and directories.
+fn basename(name: &str) -> String {
+    let mut name = name.trim();
+    loop {
+        if let Some(rest) = name.strip_prefix("./").or_else(|| name.strip_prefix("[]")) {
+            name = rest;
+        } else if let Some(rest) = name.strip_prefix(':') {
+            name = rest;
+        } else {
+            break;
         }
-        out
     }
+    let name = name.trim_matches(|c| matches!(c, '[' | ']' | '"' | '\''));
+    name.rsplit(['/', '\\']).next().unwrap_or(name).to_string()
 }
 
 impl ResourceProvider for TexmfResources {
     fn read_request(&self, request: &ResourceRequest) -> Result<Resource, ResourceError> {
-        for cand in Self::candidates(request) {
-            let fmt = Self::format_for(request.kind, &cand);
-            if let Some(path) = self.resolve(&cand, fmt) {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    return Ok(Resource::from_request(request, bytes));
-                }
+        let path = self
+            .resolve(request)
+            .ok_or_else(|| ResourceError::not_found(request))?;
+        std::fs::read(&path)
+            .map(|bytes| Resource::answering(request, bytes))
+            .map_err(|error| ResourceError::from_io(request, &error))
+    }
+}
+
+/// Why a TeX Live tree could not be opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TexmfError {
+    /// No root was configured or discoverable.
+    NoRoot {
+        /// What was tried.
+        message: String,
+    },
+    /// The `ls-R` index could not be read, `mktexlsr` writes it.
+    Index {
+        /// Path of the index.
+        path: PathBuf,
+        /// The read failure.
+        message: String,
+    },
+    /// The `ls-R` index lists no files.
+    EmptyIndex {
+        /// Path of the index.
+        path: PathBuf,
+    },
+}
+
+impl fmt::Display for TexmfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRoot { message } => f.write_str(message),
+            Self::Index { path, message } => {
+                write!(f, "cannot read {}: {message}", path.display())
             }
+            Self::EmptyIndex { path } => write!(f, "{} lists no files", path.display()),
         }
-        Err(ResourceError::NotFound {
-            name: request.canonical_name(),
-            kind: request.kind,
-        })
+    }
+}
+
+impl std::error::Error for TexmfError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tree() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("mathtex-texmf-{}", std::process::id()));
+        for dir in ["tex/latex/base", "tex/plain/base", "fonts/tfm/public/cm"] {
+            std::fs::create_dir_all(root.join(dir)).expect("create tree");
+        }
+        std::fs::write(root.join("tex/latex/base/x.tex"), b"latex").expect("write");
+        std::fs::write(root.join("tex/plain/base/x.tex"), b"plain").expect("write");
+        std::fs::write(root.join("fonts/tfm/public/cm/cmr10.tfm"), b"tfm").expect("write");
+        let index = "% ls-R\n./tex/plain/base:\nx.tex\n\n./tex/latex/base:\nx.tex\n\n./fonts/tfm/public/cm:\ncmr10.tfm\n";
+        std::fs::write(root.join("ls-R"), index).expect("write index");
+        root
+    }
+
+    #[test]
+    fn requests_resolve_by_search_path_priority() {
+        let root = tree();
+        let texmf = TexmfResources::from_root(&root).expect("index");
+        assert_eq!(texmf.len(), 2);
+        // tex/latex outranks the generic tex tree although ls-R lists the plain copy first.
+        let latex = texmf
+            .read("./x.tex", ResourceKind::TexInput)
+            .expect("x.tex");
+        assert_eq!(latex.bytes, b"latex");
+        let tfm = texmf.read("cmr10.tfm", ResourceKind::Font).expect("tfm");
+        assert_eq!(tfm.bytes, b"tfm");
+        // Suffixes are the engine's job, a bare name does not resolve.
+        assert!(texmf.read("cmr10", ResourceKind::Font).is_err());
+        std::fs::remove_dir_all(root).expect("remove tree");
+    }
+
+    #[test]
+    fn a_root_without_an_index_says_why() {
+        let missing = std::env::temp_dir().join("mathtex-texmf-missing-root");
+        assert!(matches!(
+            TexmfResources::from_root(&missing),
+            Err(TexmfError::Index { .. })
+        ));
     }
 }

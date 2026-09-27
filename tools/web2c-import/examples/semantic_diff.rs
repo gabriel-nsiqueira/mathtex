@@ -1,10 +1,10 @@
-//! Diagnostic that normalizes generated files at a base commit and diffs them against the working tree.
+//! Diffs normalized generated files at `MATHTEX_SEMANTIC_DIFF_BASE`, default `HEAD`, with the working tree.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_BASE: &str = "0d6064b";
+const DEFAULT_BASE: &str = "HEAD";
 
 fn main() -> std::process::ExitCode {
     let base = std::env::var("MATHTEX_SEMANTIC_DIFF_BASE").unwrap_or_else(|_| DEFAULT_BASE.into());
@@ -123,9 +123,10 @@ fn git_show(base: &str, rel: &str, repo_root: &Path) -> Option<String> {
         .arg(format!("{base}:{rel}"))
         .output()
         .ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    })
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn collect_working_tree(dir: &Path, repo_root: &Path, out: &mut BTreeSet<String>) {
